@@ -1,5 +1,5 @@
 import Admin from "../../Modules/Admin.model.js";
-import { comparePasswords } from "../../utils/hashing.js";
+import { comparePasswords, hashPassword } from "../../utils/hashing.js";
 import jwt from "jsonwebtoken";
 
 // Authenticate admin for login
@@ -83,7 +83,7 @@ export const authenticateAdmin = async (credentials) => {
 
 // Create new admin
 export const createAdmin = async (adminData) => {
-  const { email } = adminData;
+  const { email, password } = adminData;
 
   // Check if admin already exists
   const existingAdmin = await Admin.findOne({ email });
@@ -91,8 +91,14 @@ export const createAdmin = async (adminData) => {
     throw new Error("Admin already exists");
   }
 
-  // Create admin
-  const admin = new Admin(adminData);
+  // Hash password before saving
+  const hashedPassword = await hashPassword(password);
+
+  // Create admin with hashed password
+  const admin = new Admin({
+    ...adminData,
+    password: hashedPassword,
+  });
   await admin.save();
 
   // Return admin without password

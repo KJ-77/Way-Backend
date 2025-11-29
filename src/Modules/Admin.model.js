@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-import bcrypt from "bcrypt";
 
 // Define role constants (enum)
 export const ADMIN_ROLES = {
@@ -47,7 +46,6 @@ const adminSchema = new mongoose.Schema(
     password: {
       type: String,
       required: [true, "Password is required"],
-      trim: true,
       select: false,
     },
     phoneNumber: {
@@ -87,19 +85,6 @@ const adminSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
-// Password hashing middleware
-adminSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
-
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
 
 // Pre-save hook to set permissions based on role
 adminSchema.pre("save", function (next) {
@@ -141,11 +126,6 @@ adminSchema.methods.hasPermission = function (resource, action) {
 // Method to check if admin is super admin
 adminSchema.methods.isSuperAdmin = function () {
   return this.role === ADMIN_ROLES.SUPER_ADMIN;
-};
-
-// Method to compare password for login
-adminSchema.methods.comparePassword = async function (candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
 };
 
 const Admin = mongoose.model("Admin", adminSchema);

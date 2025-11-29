@@ -2,8 +2,7 @@ import {
   authenticateAdmin,
   createAdmin,
 } from "../../Services/crud/AdminAuthService.js";
-import { hashPassword } from "../../utils/hashing.js";
-import Admin from "../../Modules/Admin.model.js"; // Add this import
+import Admin from "../../Modules/Admin.model.js";
 
 // Admin login
 export const adminLogin = async (req, res) => {
@@ -79,16 +78,8 @@ export const createNewAdmin = async (req, res) => {
       });
     }
 
-    // Hash password
-    const hashedPassword = await hashPassword(req.body.password);
-
-    // Create admin
-    const adminData = {
-      ...req.body,
-      password: hashedPassword,
-    };
-
-    const newAdmin = await createAdmin(adminData);
+    // Create admin - service layer will hash the password
+    const newAdmin = await createAdmin(req.body);
 
     res.status(201).json({
       status: 201,

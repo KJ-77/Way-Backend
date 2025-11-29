@@ -60,11 +60,23 @@ const app = express();
 app.use(
   cors({
     origin: [
+      //local development
       "http://localhost:3000",
       "http://localhost:3001",
-      "https://zenith-eng.site",
-      "https://www.zenith-eng.site",
-      "https://dash.zenith-eng.site",
+
+      //Production - HTTP versions
+      "http://waybeirut.com",
+      "http://www.waybeirut.com",
+      "http://admin.waybeirut.com",
+
+      //Production - HTTPS versions
+      "https://waybeirut.com",
+      "https://www.waybeirut.com",
+      "https://admin.waybeirut.com",
+
+     //Vercel deployments
+     "https://way-one.vercel.app",
+     "https://way-dashboard-iota.vercel.app",
     ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -174,9 +186,7 @@ app.use((req, res) => {
 
 // MongoDB connection
 mongoose
-  .connect(
-    process.env.MONGODB_URI
-  )
+  .connect(process.env.MONGODB_URI)
   .then(() => {
     console.log("Connected to MongoDB ");
   })
@@ -187,14 +197,12 @@ mongoose
 // Start server
 if (process.env.NODE_ENV === "production") {
   const sslOptions = {
-    key: fs.readFileSync("/etc/letsencrypt/live/zenith-eng.site/privkey.pem"),
-    cert: fs.readFileSync(
-      "/etc/letsencrypt/live/zenith-eng.site/fullchain.pem"
-    ),
+    key: fs.readFileSync("/etc/letsencrypt/live/waybeirut.com/privkey.pem"),
+    cert: fs.readFileSync("/etc/letsencrypt/live/waybeirut.com/fullchain.pem"),
   };
 
   https.createServer(sslOptions, app).listen(port, () => {
-    console.log(`HTTPS Server is running on https://zenith-eng.site:${port}`);
+    console.log(`HTTPS Server is running on https://waybeirut.com:${port}`);
   });
 } else {
   app.listen(port, () => {

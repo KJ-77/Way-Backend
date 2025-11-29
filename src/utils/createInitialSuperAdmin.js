@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 import Admin, { ADMIN_ROLES } from "../Modules/Admin.model.js";
-import { hashPassword } from "./hashing.js";
+import { createAdmin } from "../Services/crud/AdminAuthService.js";
 
 dotenv.config();
 
@@ -26,15 +26,14 @@ const createInitialSuperAdmin = async () => {
     // Create initial super admin
     const superAdminData = {
       fullName: "Super Admin",
-      email: "admin@admin.com", // Change this to your desired email
-      password: await hashPassword("password123"), // Change this to your desired password
+      email: process.env.ADMIN_EMAIL, // Change this to your desired email
+      password: "password123", // Plain password - will be hashed by service
       phoneNumber: "+1234567890",
       role: ADMIN_ROLES.SUPER_ADMIN,
       active: true,
     };
 
-    const superAdmin = new Admin(superAdminData);
-    await superAdmin.save();
+    const superAdmin = await createAdmin(superAdminData);
 
     console.log("✅ Super admin created successfully!");
     console.log("Email:", superAdmin.email);
