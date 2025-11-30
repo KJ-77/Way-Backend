@@ -5,6 +5,9 @@ import {
   adminLogout,
   verifyAdmin,
   getAllAdmins,
+  getAdminById,
+  updateAdmin,
+  deleteAdmin,
 } from "../Controllers/Auth/AdminAuthController.js";
 import {
   validateAdminLogin,
@@ -35,6 +38,30 @@ router.get(
   protect,
   checkPermission("adminManagement", "read"),
   getAllAdmins
+);
+
+// Get single admin by ID
+router.get(
+  "/users/:id",
+  protect,
+  checkPermission("adminManagement", "read"),
+  getAdminById
+);
+
+// Update admin by ID
+router.put(
+  "/users/:id",
+  protect,
+  checkPermission("adminManagement", "write"),
+  updateAdmin
+);
+
+// Delete admin by ID
+router.delete(
+  "/users/:id",
+  protect,
+  checkPermission("adminManagement", "write"),
+  deleteAdmin
 );
 
 export default router;

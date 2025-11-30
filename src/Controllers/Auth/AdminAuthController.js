@@ -173,3 +173,165 @@ export const getAllAdmins = async (req, res) => {
     });
   }
 };
+
+// Get single admin by ID (only accessible by super_admin)
+export const getAdminById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Find admin by ID, exclude sensitive fields
+    const admin = await Admin.findById(id).select(
+      "-password -failedLoginAttempts -accountLocked -accountLockedUntil"
+    );
+
+    if (!admin) {
+      return res.status(404).json({
+        status: 404,
+        success: false,
+        message: "Admin not found",
+        data: null,
+      });
+    }
+
+    res.status(200).json({
+      status: 200,
+      success: true,
+      message: "Admin retrieved successfully",
+      data: admin,
+    });
+  } catch (error) {
+    console.error("Error fetching admin by ID:", error);
+    res.status(500).json({
+      status: 500,
+      success: false,
+      message: "An error occurred while retrieving admin",
+      data: null,
+    });
+  }
+};
+
+// Update admin by ID (only accessible by super_admin)
+export const updateAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fullName, email, role, password } = req.body;
+
+    // Only super_admin can update admins
+    if (req.admin.role !== "super_admin") {
+      return res.status(403).json({
+        status: 403,
+        success: false,
+        message: "Only super admin can update admin accounts",
+      });
+    }
+
+    // Find the admin
+    const admin = await Admin.findById(id);
+
+    if (!admin) {
+      return res.status(404).json({
+        status: 404,
+        success: false,
+        message: "Admin not found",
+        data: null,
+      });
+    }
+
+    // Update fields if provided
+    if (fullName) admin.fullName = fullName;
+    if (email) admin.email = email;
+    if (role) admin.role = role;
+
+    // Update password if provided
+    if (password) {
+      const bcrypt = await import("bcryptjs");
+      const salt = await bcrypt.genSalt(10);
+      admin.password = await bcrypt.hash(password, salt);
+    }
+
+    // Save the updated admin
+    await admin.save();
+
+    // Return updated admin without sensitive data
+    const updatedAdmin = await Admin.findById(id).select(
+      "-password -failedLoginAttempts -accountLocked -accountLockedUntil"
+    );
+
+    res.status(200).json({
+      status: 200,
+      success: true,
+      message: "Admin updated successfully",
+      data: updatedAdmin,
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        status: 409,
+        success: false,
+        message: "An admin with this email already exists",
+        data: null,
+      });
+    }
+
+    console.error("Error updating admin:", error);
+    res.status(500).json({
+      status: 500,
+      success: false,
+      message: "An error occurred while updating admin",
+      data: null,
+    });
+  }
+};
+
+// Delete admin by ID (only accessible by super_admin)
+export const deleteAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Only super_admin can delete admins
+    if (req.admin.role !== "super_admin") {
+      return res.status(403).json({
+        status: 403,
+        success: false,
+        message: "Only super admin can delete admin accounts",
+      });
+    }
+
+    // Prevent deleting yourself
+    if (req.admin.adminId === id) {
+      return res.status(400).json({
+        status: 400,
+        success: false,
+        message: "You cannot delete your own admin account",
+        data: null,
+      });
+    }
+
+    // Find and delete the admin
+    const admin = await Admin.findByIdAndDelete(id);
+
+    if (!admin) {
+      return res.status(404).json({
+        status: 404,
+        success: false,
+        message: "Admin not found",
+        data: null,
+      });
+    }
+
+    res.status(200).json({
+      status: 200,
+      success: true,
+      message: "Admin deleted successfully",
+      data: null,
+    });
+  } catch (error) {
+    console.error("Error deleting admin:", error);
+    res.status(500).json({
+      status: 500,
+      success: false,
+      message: "An error occurred while deleting admin",
+      data: null,
+    });
+  }
+};
