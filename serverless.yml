@@ -1,0 +1,56 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: waybeirut
+# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
+app: way-backend
+# "service" is the name of this project. This will also be added to your AWS resource names.
+service: Way-Backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: eu-west-3
+  stage: ${opt:stage, 'dev'}
+  profile: Tarek
+  environment:
+    DB_HOST: ${env:DB_HOST}
+    DB_USER: ${env:DB_USER}
+    DB_PASSWORD: ${env:DB_PASSWORD}
+    DB_NAME: ${env:DB_NAME}
+    DB_PORT: ${env:DB_PORT}
+  httpApi:
+    cors:
+      allowedOrigins:
+        - "https://www.waybeirut.com"
+        - "https://waybeirut.com"
+        - "https://admin.waybeirut.com"
+        - "http://localhost:5173"
+        - "http://127.0.0.1:5173"
+      allowedHeaders:
+        - Content-Type # Essential for JSON requests
+        - Authorization # For authentication tokens
+        - X-Requested-With # Common for AJAX/fetch requests
+        - X-Api-Key # If you plan to use API keys
+        - Accept # For content negotiation
+        - X-Filename # For binary uploads with filename
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+      allowCredentials: true
+      maxAge: 86400 # 24 hours
+    # Enable binary media types for image uploads
+    payload: "2.0"
+    disableDefaultEndpoint: false
+  # Uncomment to easily set up a custom domain. Read the docs for more details:
+  # https://www.serverless.com/framework/docs/providers/aws/guide/domains
+  # domain: api.example.com
+
+functions:
+  hello:
+    handler: handler.hello
+    events:
+      - httpApi:
+          path: /
+          method: get
