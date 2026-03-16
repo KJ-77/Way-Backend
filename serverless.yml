@@ -5,6 +5,16 @@ app: way-backend
 # "service" is the name of this project. This will also be added to your AWS resource names.
 service: Way-Backend
 
+custom:
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    target: node20
+    platform: node
+    external:
+      - pg-native
+
 provider:
   name: aws
   runtime: nodejs20.x
@@ -26,12 +36,12 @@ provider:
         - "http://localhost:5173"
         - "http://127.0.0.1:5173"
       allowedHeaders:
-        - Content-Type # Essential for JSON requests
-        - Authorization # For authentication tokens
-        - X-Requested-With # Common for AJAX/fetch requests
-        - X-Api-Key # If you plan to use API keys
-        - Accept # For content negotiation
-        - X-Filename # For binary uploads with filename
+        - Content-Type
+        - Authorization
+        - X-Requested-With
+        - X-Api-Key
+        - Accept
+        - X-Filename
       allowedMethods:
         - GET
         - POST
@@ -39,18 +49,158 @@ provider:
         - DELETE
         - OPTIONS
       allowCredentials: true
-      maxAge: 86400 # 24 hours
-    # Enable binary media types for image uploads
+      maxAge: 86400
     payload: "2.0"
     disableDefaultEndpoint: false
-  # Uncomment to easily set up a custom domain. Read the docs for more details:
-  # https://www.serverless.com/framework/docs/providers/aws/guide/domains
-  # domain: api.example.com
 
 functions:
-  hello:
-    handler: handler.hello
+  # ── Health ──
+  health:
+    handler: src/functions/health/handler.health
     events:
       - httpApi:
           path: /
-          method: get
+          method: GET
+
+  # ── Dashboard ──
+  getDashboard:
+    handler: src/functions/dashboard/handler.getDashboard
+    events:
+      - httpApi:
+          path: /dashboard
+          method: GET
+
+  # ── Users ──
+  getUsers: # rename to get All Users
+    handler: src/functions/users/handler.getUsers
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /users
+          method: GET
+  getUser: #Combine with getUsers and make id optional
+    handler: src/functions/users/handler.getUser
+    events:
+      - httpApi:
+          path: /users/{id}
+          method: GET
+  createUser:
+    handler: src/functions/users/handler.createUser
+    events:
+      - httpApi:
+          path: /users
+          method: POST
+  updateUser:
+    handler: src/functions/users/handler.updateUser
+    events:
+      - httpApi:
+          path: /users/{id}
+          method: PUT
+  deleteUser:
+    handler: src/functions/users/handler.deleteUser
+    events:
+      - httpApi:
+          path: /users/{id}
+          method: DELETE
+
+  # ── Sessions ──
+  getSessions:
+    handler: src/functions/sessions/handler.getSessions
+    events:
+      - httpApi:
+          path: /sessions
+          method: GET
+  getSession:
+    handler: src/functions/sessions/handler.getSession
+    events:
+      - httpApi:
+          path: /sessions/{id}
+          method: GET
+  createSession:
+    handler: src/functions/sessions/handler.createSession
+    events:
+      - httpApi:
+          path: /sessions
+          method: POST
+  updateSession:
+    handler: src/functions/sessions/handler.updateSession
+    events:
+      - httpApi:
+          path: /sessions/{id}
+          method: PUT
+  deleteSession:
+    handler: src/functions/sessions/handler.deleteSession
+    events:
+      - httpApi:
+          path: /sessions/{id}
+          method: DELETE
+
+  # ── Packages ──
+  getPackages:
+    handler: src/functions/packages/handler.getPackages
+    events:
+      - httpApi:
+          path: /packages
+          method: GET
+  getPackage:
+    handler: src/functions/packages/handler.getPackage
+    events:
+      - httpApi:
+          path: /packages/{id}
+          method: GET
+  createPackage:
+    handler: src/functions/packages/handler.createPackage
+    events:
+      - httpApi:
+          path: /packages
+          method: POST
+  updatePackage:
+    handler: src/functions/packages/handler.updatePackage
+    events:
+      - httpApi:
+          path: /packages/{id}
+          method: PUT
+  deletePackage:
+    handler: src/functions/packages/handler.deletePackage
+    events:
+      - httpApi:
+          path: /packages/{id}
+          method: DELETE
+
+  # ── Tutors ──
+  getTutors:
+    handler: src/functions/tutors/handler.getTutors
+    events:
+      - httpApi:
+          path: /tutors
+          method: GET
+  getTutor:
+    handler: src/functions/tutors/handler.getTutor
+    events:
+      - httpApi:
+          path: /tutors/{id}
+          method: GET
+  createTutor:
+    handler: src/functions/tutors/handler.createTutor
+    events:
+      - httpApi:
+          path: /tutors
+          method: POST
+  updateTutor:
+    handler: src/functions/tutors/handler.updateTutor
+    events:
+      - httpApi:
+          path: /tutors/{id}
+          method: PUT
+  deleteTutor:
+    handler: src/functions/tutors/handler.deleteTutor
+    events:
+      - httpApi:
+          path: /tutors/{id}
+          method: DELETE
