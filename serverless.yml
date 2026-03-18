@@ -21,6 +21,15 @@ provider:
   region: eu-west-3
   stage: ${opt:stage, 'dev'}
   profile: Tarek
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - ec2:CreateNetworkInterface
+            - ec2:DescribeNetworkInterfaces
+            - ec2:DeleteNetworkInterface
+          Resource: "*"
   environment:
     DB_HOST: ${env:DB_HOST}
     DB_USER: ${env:DB_USER}
@@ -57,6 +66,13 @@ functions:
   # ── Health ──
   health:
     handler: src/functions/health/handler.health
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /
@@ -65,13 +81,20 @@ functions:
   # ── Dashboard ──
   getDashboard:
     handler: src/functions/dashboard/handler.getDashboard
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /dashboard
           method: GET
 
   # ── Users ──
-  getUsers: # rename to get All Users
+  getUsers:
     handler: src/functions/users/handler.getUsers
     vpc:
       securityGroupIds:
@@ -84,26 +107,47 @@ functions:
       - httpApi:
           path: /users
           method: GET
-  getUser: #Combine with getUsers and make id optional
-    handler: src/functions/users/handler.getUser
-    events:
       - httpApi:
           path: /users/{id}
           method: GET
+
   createUser:
     handler: src/functions/users/handler.createUser
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /users
           method: POST
+
   updateUser:
     handler: src/functions/users/handler.updateUser
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /users/{id}
           method: PUT
+
   deleteUser:
     handler: src/functions/users/handler.deleteUser
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /users/{id}
@@ -112,30 +156,69 @@ functions:
   # ── Sessions ──
   getSessions:
     handler: src/functions/sessions/handler.getSessions
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /sessions
           method: GET
+
   getSession:
     handler: src/functions/sessions/handler.getSession
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /sessions/{id}
           method: GET
+
   createSession:
     handler: src/functions/sessions/handler.createSession
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /sessions
           method: POST
+
   updateSession:
     handler: src/functions/sessions/handler.updateSession
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /sessions/{id}
           method: PUT
+
   deleteSession:
     handler: src/functions/sessions/handler.deleteSession
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /sessions/{id}
@@ -144,30 +227,69 @@ functions:
   # ── Packages ──
   getPackages:
     handler: src/functions/packages/handler.getPackages
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /packages
           method: GET
+
   getPackage:
     handler: src/functions/packages/handler.getPackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /packages/{id}
           method: GET
+
   createPackage:
     handler: src/functions/packages/handler.createPackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /packages
           method: POST
+
   updatePackage:
     handler: src/functions/packages/handler.updatePackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /packages/{id}
           method: PUT
+
   deletePackage:
     handler: src/functions/packages/handler.deletePackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /packages/{id}
@@ -176,30 +298,69 @@ functions:
   # ── Tutors ──
   getTutors:
     handler: src/functions/tutors/handler.getTutors
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /tutors
           method: GET
+
   getTutor:
     handler: src/functions/tutors/handler.getTutor
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /tutors/{id}
           method: GET
+
   createTutor:
     handler: src/functions/tutors/handler.createTutor
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /tutors
           method: POST
+
   updateTutor:
     handler: src/functions/tutors/handler.updateTutor
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /tutors/{id}
           method: PUT
+
   deleteTutor:
     handler: src/functions/tutors/handler.deleteTutor
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
     events:
       - httpApi:
           path: /tutors/{id}

@@ -69,8 +69,11 @@ export interface Tutor {
 
 // ── DTOs (for create/update — omit id and auto-generated fields) ──
 
-export type CreateUserDto = Omit<User, "id">
-export type UpdateUserDto = Partial<CreateUserDto>
+// User DTOs are derived from Zod schemas (see src/lib/schemas/user.schema.ts)
+import type { z } from "zod"
+import type { CreateUserSchema, UpdateUserSchema } from "./schemas/user.schema"
+export type CreateUserDto = z.infer<typeof CreateUserSchema>
+export type UpdateUserDto = z.infer<typeof UpdateUserSchema>
 
 export type CreatePackageDto = Omit<Package, "id">
 export type UpdatePackageDto = Partial<CreatePackageDto>
