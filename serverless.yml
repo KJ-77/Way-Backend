@@ -39,6 +39,11 @@ provider:
             - cognito-idp:AdminGetUser
           Resource:
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource:
+            - arn:aws:lambda:eu-west-3:*:function:${self:service}-${self:provider.stage}-accountDbOps
   environment:
     DB_HOST: ${env:DB_HOST}
     DB_USER: ${env:DB_USER}
@@ -427,6 +432,7 @@ functions:
             name: cognitoAuthorizer
 
   # ── Accounts ──
+  # DB-only operations stay inside VPC
   getAccounts:
     handler: src/functions/accounts/handler.getAccounts
     vpc:
@@ -448,8 +454,9 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
-  createAccount:
-    handler: src/functions/accounts/handler.createAccount
+  # Internal DB Lambda — invoked by Cognito-facing handlers, no HTTP events
+  accountDbOps:
+    handler: src/functions/accounts/db-handler.accountDbOps
     vpc:
       securityGroupIds:
         - sg-07ae81e354436980c
@@ -457,6 +464,30 @@ functions:
         - subnet-0d78211d7c5202876
         - subnet-01084e20e83286143
         - subnet-01554d440f1605680
+
+  # Admin retry endpoint — insert account into DB when initial sync failed
+  syncAccount:
+    handler: src/functions/accounts/db-handler.syncAccount
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /accounts/sync
+          method: POST
+          authorizer:
+            name: cognitoAuthorizer
+
+  # Cognito-facing operations live OUTSIDE VPC (need internet for Cognito API)
+  # They invoke accountDbOps Lambda for DB writes
+  createAccount:
+    handler: src/functions/accounts/handler.createAccount
+    environment:
+      ACCOUNT_DB_FUNCTION: ${self:service}-${self:provider.stage}-accountDbOps
     events:
       - httpApi:
           path: /accounts
@@ -466,13 +497,8 @@ functions:
 
   updateAccount:
     handler: src/functions/accounts/handler.updateAccount
-    vpc:
-      securityGroupIds:
-        - sg-07ae81e354436980c
-      subnetIds:
-        - subnet-0d78211d7c5202876
-        - subnet-01084e20e83286143
-        - subnet-01554d440f1605680
+    environment:
+      ACCOUNT_DB_FUNCTION: ${self:service}-${self:provider.stage}-accountDbOps
     events:
       - httpApi:
           path: /accounts/{id}
@@ -482,13 +508,8 @@ functions:
 
   deleteAccount:
     handler: src/functions/accounts/handler.deleteAccount
-    vpc:
-      securityGroupIds:
-        - sg-07ae81e354436980c
-      subnetIds:
-        - subnet-0d78211d7c5202876
-        - subnet-01084e20e83286143
-        - subnet-01554d440f1605680
+    environment:
+      ACCOUNT_DB_FUNCTION: ${self:service}-${self:provider.stage}-accountDbOps
     events:
       - httpApi:
           path: /accounts/{id}
