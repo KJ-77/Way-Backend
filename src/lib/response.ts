@@ -34,5 +34,13 @@ export const handleError = (err: unknown): APIGatewayProxyResultV2 => {
     return createResponse(400, { error: "Foreign key violation", message: error.message })
   }
 
+  // Cognito errors
+  if (error.name === "UsernameExistsException") {
+    return createResponse(409, { error: "User already exists in Cognito", message: error.message })
+  }
+  if (error.name === "UserNotFoundException") {
+    return createResponse(404, { error: "User not found in Cognito", message: error.message })
+  }
+
   return createResponse(500, { error: "Server error", message: error.message || String(err) })
 }

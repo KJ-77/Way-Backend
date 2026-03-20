@@ -30,12 +30,23 @@ provider:
             - ec2:DescribeNetworkInterfaces
             - ec2:DeleteNetworkInterface
           Resource: "*"
+        - Effect: Allow
+          Action:
+            - cognito-idp:AdminCreateUser
+            - cognito-idp:AdminAddUserToGroup
+            - cognito-idp:AdminRemoveUserFromGroup
+            - cognito-idp:AdminDeleteUser
+            - cognito-idp:AdminGetUser
+          Resource:
+            - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
   environment:
     DB_HOST: ${env:DB_HOST}
     DB_USER: ${env:DB_USER}
     DB_PASSWORD: ${env:DB_PASSWORD}
     DB_NAME: ${env:DB_NAME}
     DB_PORT: ${env:DB_PORT}
+    COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
+    COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID}
   httpApi:
     cors:
       allowedOrigins:
@@ -61,9 +72,16 @@ provider:
       maxAge: 86400
     payload: "2.0"
     disableDefaultEndpoint: false
+    authorizers:
+      cognitoAuthorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.eu-west-3.amazonaws.com/${env:COGNITO_USER_POOL_ID}
+        audience:
+          - ${env:COGNITO_CLIENT_ID}
 
 functions:
-  # ── Health ──
+  # ── Health (no auth) ──
   health:
     handler: src/functions/health/handler.health
     vpc:
@@ -92,6 +110,8 @@ functions:
       - httpApi:
           path: /dashboard
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   # ── Users ──
   getUsers:
@@ -107,9 +127,13 @@ functions:
       - httpApi:
           path: /users
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
       - httpApi:
           path: /users/{id}
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   createUser:
     handler: src/functions/users/handler.createUser
@@ -124,6 +148,8 @@ functions:
       - httpApi:
           path: /users
           method: POST
+          authorizer:
+            name: cognitoAuthorizer
 
   updateUser:
     handler: src/functions/users/handler.updateUser
@@ -138,6 +164,8 @@ functions:
       - httpApi:
           path: /users/{id}
           method: PUT
+          authorizer:
+            name: cognitoAuthorizer
 
   deleteUser:
     handler: src/functions/users/handler.deleteUser
@@ -152,6 +180,8 @@ functions:
       - httpApi:
           path: /users/{id}
           method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
 
   # ── Sessions ──
   getSessions:
@@ -167,6 +197,8 @@ functions:
       - httpApi:
           path: /sessions
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   getSession:
     handler: src/functions/sessions/handler.getSession
@@ -181,6 +213,8 @@ functions:
       - httpApi:
           path: /sessions/{id}
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   createSession:
     handler: src/functions/sessions/handler.createSession
@@ -195,6 +229,8 @@ functions:
       - httpApi:
           path: /sessions
           method: POST
+          authorizer:
+            name: cognitoAuthorizer
 
   updateSession:
     handler: src/functions/sessions/handler.updateSession
@@ -209,6 +245,8 @@ functions:
       - httpApi:
           path: /sessions/{id}
           method: PUT
+          authorizer:
+            name: cognitoAuthorizer
 
   deleteSession:
     handler: src/functions/sessions/handler.deleteSession
@@ -223,6 +261,8 @@ functions:
       - httpApi:
           path: /sessions/{id}
           method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
 
   # ── Packages ──
   getPackages:
@@ -238,6 +278,8 @@ functions:
       - httpApi:
           path: /packages
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   getPackage:
     handler: src/functions/packages/handler.getPackage
@@ -252,6 +294,8 @@ functions:
       - httpApi:
           path: /packages/{id}
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   createPackage:
     handler: src/functions/packages/handler.createPackage
@@ -266,6 +310,8 @@ functions:
       - httpApi:
           path: /packages
           method: POST
+          authorizer:
+            name: cognitoAuthorizer
 
   updatePackage:
     handler: src/functions/packages/handler.updatePackage
@@ -280,6 +326,8 @@ functions:
       - httpApi:
           path: /packages/{id}
           method: PUT
+          authorizer:
+            name: cognitoAuthorizer
 
   deletePackage:
     handler: src/functions/packages/handler.deletePackage
@@ -294,6 +342,8 @@ functions:
       - httpApi:
           path: /packages/{id}
           method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
 
   # ── Tutors ──
   getTutors:
@@ -309,6 +359,8 @@ functions:
       - httpApi:
           path: /tutors
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   getTutor:
     handler: src/functions/tutors/handler.getTutor
@@ -323,6 +375,8 @@ functions:
       - httpApi:
           path: /tutors/{id}
           method: GET
+          authorizer:
+            name: cognitoAuthorizer
 
   createTutor:
     handler: src/functions/tutors/handler.createTutor
@@ -337,6 +391,8 @@ functions:
       - httpApi:
           path: /tutors
           method: POST
+          authorizer:
+            name: cognitoAuthorizer
 
   updateTutor:
     handler: src/functions/tutors/handler.updateTutor
@@ -351,6 +407,8 @@ functions:
       - httpApi:
           path: /tutors/{id}
           method: PUT
+          authorizer:
+            name: cognitoAuthorizer
 
   deleteTutor:
     handler: src/functions/tutors/handler.deleteTutor
@@ -365,3 +423,75 @@ functions:
       - httpApi:
           path: /tutors/{id}
           method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
+
+  # ── Accounts ──
+  getAccounts:
+    handler: src/functions/accounts/handler.getAccounts
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /accounts
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/{id}
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  createAccount:
+    handler: src/functions/accounts/handler.createAccount
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /accounts
+          method: POST
+          authorizer:
+            name: cognitoAuthorizer
+
+  updateAccount:
+    handler: src/functions/accounts/handler.updateAccount
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /accounts/{id}
+          method: PUT
+          authorizer:
+            name: cognitoAuthorizer
+
+  deleteAccount:
+    handler: src/functions/accounts/handler.deleteAccount
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /accounts/{id}
+          method: DELETE
+          authorizer:
+            name: cognitoAuthorizer

@@ -83,3 +83,21 @@ export type UpdateSessionDto = Partial<CreateSessionDto>
 
 export type CreateTutorDto = Omit<Tutor, "id">
 export type UpdateTutorDto = Partial<CreateTutorDto>
+
+// ── Accounts ──
+
+export type AccountRole = "admin" | "studio-manager"
+
+export interface Account {
+  id: string // cognito_sub
+  email: string
+  full_name: string
+  phone: string | null
+  role: AccountRole
+  created_at: string
+  updated_at: string
+}
+
+import type { CreateAccountSchema, UpdateAccountSchema } from "./schemas/account.schema"
+export type CreateAccountDto = z.infer<typeof CreateAccountSchema>
+export type UpdateAccountDto = z.infer<typeof UpdateAccountSchema>

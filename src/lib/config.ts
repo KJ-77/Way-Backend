@@ -12,4 +12,9 @@ export const config = {
     database: process.env.DB_NAME!,
     port: parseInt(process.env.DB_PORT || "5432"),
   },
+  cognito: {
+    userPoolId: process.env.COGNITO_USER_POOL_ID!,
+    clientId: process.env.COGNITO_CLIENT_ID!,
+    region: process.env.AWS_REGION || "eu-west-3",
+  },
 }

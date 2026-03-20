@@ -8,6 +8,7 @@
     "deploy:prod": "serverless deploy --stage prod"
   },
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1012.0",
     "dotenv": "^17.3.1",
     "pg": "^8.20.0",
     "zod": "^4.3.6"
