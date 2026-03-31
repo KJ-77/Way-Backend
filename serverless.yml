@@ -37,13 +37,16 @@ provider:
             - cognito-idp:AdminRemoveUserFromGroup
             - cognito-idp:AdminDeleteUser
             - cognito-idp:AdminGetUser
+            - cognito-idp:AdminUpdateUserAttributes
           Resource:
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
+            - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:CLIENT_COGNITO_USER_POOL_ID}
         - Effect: Allow
           Action:
             - lambda:InvokeFunction
           Resource:
             - arn:aws:lambda:eu-west-3:*:function:${self:service}-${self:provider.stage}-accountDbOps
+            - arn:aws:lambda:eu-west-3:*:function:${self:service}-${self:provider.stage}-userDbOps
   environment:
     DB_HOST: ${env:DB_HOST}
     DB_USER: ${env:DB_USER}
@@ -52,6 +55,8 @@ provider:
     DB_PORT: ${env:DB_PORT}
     COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
     COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID}
+    CLIENT_COGNITO_USER_POOL_ID: ${env:CLIENT_COGNITO_USER_POOL_ID}
+    CLIENT_COGNITO_CLIENT_ID: ${env:CLIENT_COGNITO_CLIENT_ID}
   httpApi:
     cors:
       allowedOrigins:
@@ -119,6 +124,7 @@ functions:
             name: cognitoAuthorizer
 
   # ── Users ──
+  # DB-only read operations stay inside VPC
   getUsers:
     handler: src/functions/users/handler.getUsers
     vpc:
@@ -140,8 +146,9 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
-  createUser:
-    handler: src/functions/users/handler.createUser
+  # Internal DB Lambda — invoked by Cognito-facing user handlers, no HTTP events
+  userDbOps:
+    handler: src/functions/users/db-handler.userDbOps
     vpc:
       securityGroupIds:
         - sg-07ae81e354436980c
@@ -149,6 +156,13 @@ functions:
         - subnet-0d78211d7c5202876
         - subnet-01084e20e83286143
         - subnet-01554d440f1605680
+
+  # Cognito-facing operations live OUTSIDE VPC (need internet for Cognito API)
+  # They invoke userDbOps Lambda for DB writes
+  createUser:
+    handler: src/functions/users/handler.createUser
+    environment:
+      USER_DB_FUNCTION: ${self:service}-${self:provider.stage}-userDbOps
     events:
       - httpApi:
           path: /users
@@ -158,13 +172,8 @@ functions:
 
   updateUser:
     handler: src/functions/users/handler.updateUser
-    vpc:
-      securityGroupIds:
-        - sg-07ae81e354436980c
-      subnetIds:
-        - subnet-0d78211d7c5202876
-        - subnet-01084e20e83286143
-        - subnet-01554d440f1605680
+    environment:
+      USER_DB_FUNCTION: ${self:service}-${self:provider.stage}-userDbOps
     events:
       - httpApi:
           path: /users/{id}
@@ -174,13 +183,8 @@ functions:
 
   deleteUser:
     handler: src/functions/users/handler.deleteUser
-    vpc:
-      securityGroupIds:
-        - sg-07ae81e354436980c
-      subnetIds:
-        - subnet-0d78211d7c5202876
-        - subnet-01084e20e83286143
-        - subnet-01554d440f1605680
+    environment:
+      USER_DB_FUNCTION: ${self:service}-${self:provider.stage}-userDbOps
     events:
       - httpApi:
           path: /users/{id}
@@ -346,6 +350,87 @@ functions:
     events:
       - httpApi:
           path: /packages/{id}
+          method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
+
+  # ── User Packages (Subscriptions) ──
+  getUserPackages:
+    handler: src/functions/user-packages/handler.getUserPackages
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /user-packages
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  getUserPackage:
+    handler: src/functions/user-packages/handler.getUserPackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /user-packages/{id}
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  createUserPackage:
+    handler: src/functions/user-packages/handler.createUserPackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /user-packages
+          method: POST
+          authorizer:
+            name: cognitoAuthorizer
+
+  updateUserPackage:
+    handler: src/functions/user-packages/handler.updateUserPackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /user-packages/{id}
+          method: PUT
+          authorizer:
+            name: cognitoAuthorizer
+
+  deleteUserPackage:
+    handler: src/functions/user-packages/handler.deleteUserPackage
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /user-packages/{id}
           method: DELETE
           authorizer:
             name: cognitoAuthorizer

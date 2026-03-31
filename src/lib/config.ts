@@ -17,4 +17,9 @@ export const config = {
     clientId: process.env.COGNITO_CLIENT_ID!,
     region: process.env.AWS_REGION || "eu-west-3",
   },
+  clientCognito: {
+    userPoolId: process.env.CLIENT_COGNITO_USER_POOL_ID!,
+    clientId: process.env.CLIENT_COGNITO_CLIENT_ID!,
+    region: process.env.AWS_REGION || "eu-west-3",
+  },
 }

@@ -5,6 +5,7 @@ import {
   AdminRemoveUserFromGroupCommand,
   AdminDeleteUserCommand,
   AdminGetUserCommand,
+  AdminUpdateUserAttributesCommand,
 } from "@aws-sdk/client-cognito-identity-provider"
 import { config } from "./config"
 
@@ -56,6 +57,29 @@ export const removeUserFromGroup = async (username: string, groupName: string): 
   )
 }
 
+// Syncs mutable user attributes (name, phone) back to Cognito
+export const updateCognitoUserAttributes = async (
+  username: string,
+  attrs: { fullName?: string; phone?: string | null },
+): Promise<void> => {
+  const userAttributes: { Name: string; Value: string }[] = []
+  if (attrs.fullName !== undefined) {
+    userAttributes.push({ Name: "name", Value: attrs.fullName })
+  }
+  if (attrs.phone !== undefined) {
+    userAttributes.push({ Name: "phone_number", Value: attrs.phone || "" })
+  }
+  if (userAttributes.length === 0) return
+
+  await client.send(
+    new AdminUpdateUserAttributesCommand({
+      UserPoolId: config.cognito.userPoolId,
+      Username: username,
+      UserAttributes: userAttributes,
+    }),
+  )
+}
+
 export const deleteCognitoUser = async (username: string): Promise<void> => {
   await client.send(
     new AdminDeleteUserCommand({
@@ -70,6 +94,100 @@ export const getCognitoUser = async (username: string) => {
     new AdminGetUserCommand({
       UserPoolId: config.cognito.userPoolId,
       Username: username,
+    }),
+  )
+}
+
+// ── Client Pool helpers (WayBeirut-Clients) ──
+
+const clientPool = new CognitoIdentityProviderClient({ region: config.clientCognito.region })
+
+// Generates a temp password meeting pool requirements (8+ chars, upper, lower, number)
+const generateTempPassword = (): string => {
+  const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  const lower = "abcdefghijklmnopqrstuvwxyz"
+  const digits = "0123456789"
+  const all = upper + lower + digits
+  // Guarantee at least one of each required type
+  let pw = upper[Math.floor(Math.random() * 26)]
+    + lower[Math.floor(Math.random() * 26)]
+    + digits[Math.floor(Math.random() * 10)]
+  for (let i = 3; i < 12; i++) pw += all[Math.floor(Math.random() * all.length)]
+  // Shuffle to avoid predictable positions
+  return pw.split("").sort(() => Math.random() - 0.5).join("")
+}
+
+/**
+ * Creates a client user in the WayBeirut-Clients Cognito pool.
+ * - With email: Cognito sends temp password to client's email
+ * - Without email: returns generated temp password for admin to share verbally
+ */
+export const createClientCognitoUser = async (
+  phone: string,
+  fullName: string,
+  email?: string,
+): Promise<{ sub: string; tempPassword: string | null }> => {
+  // Strip spaces for Cognito — username and phone_number attribute require no whitespace
+  const cognitoPhone = phone.replace(/\s+/g, "")
+
+  const attrs: { Name: string; Value: string }[] = [
+    { Name: "name", Value: fullName },
+    { Name: "phone_number", Value: cognitoPhone },
+  ]
+  if (email) {
+    attrs.push({ Name: "email", Value: email })
+    attrs.push({ Name: "email_verified", Value: "true" })
+  }
+
+  // With email: Cognito delivers temp password via email
+  // Without email: suppress delivery and use our generated password
+  const hasEmail = !!email
+  const tempPassword = hasEmail ? undefined : generateTempPassword()
+
+  const result = await clientPool.send(
+    new AdminCreateUserCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: cognitoPhone, // must be space-free for Cognito username constraint
+      UserAttributes: attrs,
+      ...(hasEmail
+        ? { DesiredDeliveryMediums: ["EMAIL"] }
+        : { MessageAction: "SUPPRESS", TemporaryPassword: tempPassword }),
+    }),
+  )
+
+  const sub = result.User?.Attributes?.find((a) => a.Name === "sub")?.Value
+  if (!sub) throw new Error("Failed to get cognito_sub from created client user")
+  return { sub, tempPassword: tempPassword ?? null }
+}
+
+export const deleteClientCognitoUser = async (phone: string): Promise<void> => {
+  await clientPool.send(
+    new AdminDeleteUserCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: phone.replace(/\s+/g, ""), // normalize to match how user was created
+    }),
+  )
+}
+
+export const updateClientCognitoUserAttributes = async (
+  phone: string, // DB phone (may have spaces) — normalized to match Cognito username
+  attrs: { fullName?: string; phone?: string; email?: string },
+): Promise<void> => {
+  const userAttributes: { Name: string; Value: string }[] = []
+  if (attrs.fullName !== undefined) userAttributes.push({ Name: "name", Value: attrs.fullName })
+  // Strip spaces from new phone value too — phone_number attribute requires E.164 format
+  if (attrs.phone !== undefined) userAttributes.push({ Name: "phone_number", Value: attrs.phone.replace(/\s+/g, "") })
+  if (attrs.email !== undefined) {
+    userAttributes.push({ Name: "email", Value: attrs.email })
+    userAttributes.push({ Name: "email_verified", Value: "true" })
+  }
+  if (userAttributes.length === 0) return
+
+  await clientPool.send(
+    new AdminUpdateUserAttributesCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: phone.replace(/\s+/g, ""), // normalize to match how user was created
+      UserAttributes: userAttributes,
     }),
   )
 }

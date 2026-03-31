@@ -104,6 +104,14 @@ export const updateAccount = async (event: APIGatewayProxyEventV2): Promise<APIG
       await cognito.addUserToGroup(existing.email, result.data.role)
     }
 
+    // Sync mutable attributes (name, phone) to Cognito
+    if (result.data.full_name || result.data.phone !== undefined) {
+      await cognito.updateCognitoUserAttributes(existing.email, {
+        fullName: result.data.full_name,
+        phone: result.data.phone,
+      })
+    }
+
     // Update DB via Lambda
     const updated = await invokeLambda<Account | null>(DB_FUNCTION, {
       action: "update",

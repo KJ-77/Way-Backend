@@ -1,17 +1,10 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
-import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
+import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
 import type { CreatePackageDto, UpdatePackageDto } from "../../lib/types"
 import * as packageService from "../../services/packageService"
 
-export const getPackages = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+export const getPackages = async (): Promise<APIGatewayProxyResultV2> => {
   try {
-    const userId = getQueryParam(event, "user_id")
-
-    if (userId) {
-      const packages = await packageService.getPackagesByUserId(Number(userId))
-      return createResponse(200, packages)
-    }
-
     const packages = await packageService.getAllPackages()
     return createResponse(200, packages)
   } catch (err) {
@@ -35,8 +28,8 @@ export const getPackage = async (event: APIGatewayProxyEventV2): Promise<APIGate
 export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const data = parseBody<CreatePackageDto>(event.body)
-    if (!data.user_id || !data.package_type) {
-      return createResponse(400, { error: "user_id and package_type are required" })
+    if (!data.package_type) {
+      return createResponse(400, { error: "package_type is required" })
     }
 
     const pkg = await packageService.createPackage(data)
