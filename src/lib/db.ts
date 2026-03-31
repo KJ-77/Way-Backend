@@ -1,5 +1,8 @@
-import { Pool, type QueryResultRow } from "pg"
+import { Pool, types, type QueryResultRow } from "pg"
 import { config } from "./config"
+
+// Parse numeric/decimal columns as JS numbers instead of strings
+types.setTypeParser(1700, (val: string) => parseFloat(val))
 
 // Pool is created OUTSIDE the handler — persists across warm Lambda invocations.
 // Each Lambda container gets its own pool. At high concurrency, multiple containers

@@ -20,6 +20,12 @@ const BASE_SELECT = `
 export const getAllUserPackages = async (): Promise<UserPackageJoined[]> =>
   executeQuery<UserPackageJoined>(`${BASE_SELECT} ORDER BY up.purchase_date DESC`)
 
+export const getUserPackagesByUserId = async (userId: string): Promise<UserPackageJoined[]> =>
+  executeQuery<UserPackageJoined>(
+    `${BASE_SELECT} WHERE up.user_id = $1 ORDER BY up.purchase_date DESC`,
+    [userId]
+  )
+
 export const getUserPackageById = async (id: number): Promise<UserPackageJoined | null> => {
   const rows = await executeQuery<UserPackageJoined>(
     `${BASE_SELECT} WHERE up.id = $1`,

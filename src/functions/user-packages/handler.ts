@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
-import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
+import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
 import type { CreateUserPackageDto, UpdateUserPackageDto, PackageStatus, UserPackageJoined } from "../../lib/types"
 import * as userPackageService from "../../services/userPackageService"
 
@@ -12,9 +12,14 @@ function computeStatus(row: UserPackageJoined): PackageStatus {
   return "active"
 }
 
-export const getUserPackages = async (): Promise<APIGatewayProxyResultV2> => {
+export const getUserPackages = async (
+  event: APIGatewayProxyEventV2
+): Promise<APIGatewayProxyResultV2> => {
   try {
-    const rows = await userPackageService.getAllUserPackages()
+    const userId = getQueryParam(event, "user_id")
+    const rows = userId
+      ? await userPackageService.getUserPackagesByUserId(userId)
+      : await userPackageService.getAllUserPackages()
     const result = rows.map((row) => ({ ...row, status: computeStatus(row) }))
     return createResponse(200, result)
   } catch (err) {

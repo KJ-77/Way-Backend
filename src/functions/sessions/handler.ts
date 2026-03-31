@@ -5,15 +5,10 @@ import * as sessionService from "../../services/sessionService"
 
 export const getSessions = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const date = getQueryParam(event, "date")
     const userId = getQueryParam(event, "user_id")
 
-    if (date) {
-      const sessions = await sessionService.getSessionsByDate(date)
-      return createResponse(200, sessions)
-    }
     if (userId) {
-      const sessions = await sessionService.getSessionsByUserId(Number(userId))
+      const sessions = await sessionService.getSessionsByUserId(userId)
       return createResponse(200, sessions)
     }
 
@@ -40,13 +35,18 @@ export const getSession = async (event: APIGatewayProxyEventV2): Promise<APIGate
 export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const data = parseBody<CreateSessionDto>(event.body)
-    if (!data.user_id || !data.date) {
-      return createResponse(400, { error: "user_id and date are required" })
+    if (!data.user_id || !data.package_id) {
+      return createResponse(400, { error: "user_id and package_id are required" })
     }
 
     const session = await sessionService.createSession(data)
     return createResponse(201, session)
   } catch (err) {
+    // Service throws with a custom statusCode for business logic errors
+    const error = err as Error & { statusCode?: number }
+    if (error.statusCode) {
+      return createResponse(error.statusCode, { error: error.message })
+    }
     return handleError(err)
   }
 }

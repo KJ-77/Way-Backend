@@ -7,8 +7,7 @@ export type ReferralSource = "Referral" | "SCM" | "Walk-In"
 export type UserStatus = "Active" | "Dormant"
 export type Section = "Studio" | "PC"
 export type PackageStatus = "active" | "expired" | "depleted"
-export type ClassType = "pottery" | "glass" | "canvas" | "mixed-media"
-export type Attendance = "present" | "absent" | "late" | "cancelled"
+export type Attendance = "attended" | "booked" | "cancelled"
 
 // ── Entities ──
 
@@ -42,16 +41,19 @@ export interface Package {
 
 export interface Session {
   id: number
-  date: string
-  time: string
   user_id: string
-  class_type: ClassType
   package_id: number
   session_nb: number
-  deduct_group: number
-  session_weight: number
+  session_weight: number // decimal(10,2) in DB
   attendance: Attendance
   notes?: string
+  created_at: string
+}
+
+// JOIN query result — includes user name + package name
+export interface SessionJoined extends Session {
+  user_name: string
+  package_name: string
 }
 
 export interface Tutor {
@@ -72,7 +74,14 @@ export type UpdateUserDto = z.infer<typeof UpdateUserSchema>
 export type CreatePackageDto = Omit<Package, "id">
 export type UpdatePackageDto = Partial<CreatePackageDto>
 
-export type CreateSessionDto = Omit<Session, "id">
+export interface CreateSessionDto {
+  user_id: string
+  package_id: number
+  session_weight: number
+  attendance: Attendance
+  notes?: string
+}
+
 export type UpdateSessionDto = Partial<CreateSessionDto>
 
 // ── User Packages (Subscriptions) ──
