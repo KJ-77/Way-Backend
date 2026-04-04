@@ -38,6 +38,7 @@ provider:
             - cognito-idp:AdminDeleteUser
             - cognito-idp:AdminGetUser
             - cognito-idp:AdminUpdateUserAttributes
+            - cognito-idp:AdminResetUserPassword
           Resource:
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:CLIENT_COGNITO_USER_POOL_ID}
@@ -599,5 +600,17 @@ functions:
       - httpApi:
           path: /accounts/{id}
           method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
+
+  # Admin-initiated password reset — calls Cognito AdminResetUserPassword
+  resetAccountPassword:
+    handler: src/functions/accounts/handler.resetAccountPassword
+    environment:
+      ACCOUNT_DB_FUNCTION: ${self:service}-${self:provider.stage}-accountDbOps
+    events:
+      - httpApi:
+          path: /accounts/{id}/reset-password
+          method: POST
           authorizer:
             name: cognitoAuthorizer

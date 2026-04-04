@@ -124,6 +124,32 @@ export const updateAccount = async (event: APIGatewayProxyEventV2): Promise<APIG
   }
 }
 
+// ── POST /accounts/:id/reset-password — lives OUTSIDE VPC (Cognito only, no DB) ──
+export const resetAccountPassword = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  try {
+    const auth = getAuthContext(event)
+    const denied = requireRole(auth, "admin")
+    if (denied) return denied
+
+    const id = getPathParam(event, "id")
+    if (!id) return createResponse(400, { error: "Invalid account ID" })
+
+    // Look up the account email from DB (needed as Cognito username)
+    const existing = await invokeLambda<Account | null>(DB_FUNCTION, {
+      action: "getById",
+      data: { id },
+    })
+    if (!existing) return createResponse(404, { error: "Account not found" })
+
+    // Reset password — Cognito sends a verification code to the user's email
+    await cognito.resetCognitoUserPassword(existing.email)
+
+    return createResponse(200, { message: "Password reset initiated. The user will receive an email with a verification code." })
+  } catch (err) {
+    return handleError(err)
+  }
+}
+
 // ── DELETE /accounts/:id — lives OUTSIDE VPC (Cognito + invokes DB Lambda) ──
 export const deleteAccount = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {

@@ -6,6 +6,7 @@ import {
   AdminDeleteUserCommand,
   AdminGetUserCommand,
   AdminUpdateUserAttributesCommand,
+  AdminResetUserPasswordCommand,
 } from "@aws-sdk/client-cognito-identity-provider"
 import { config } from "./config"
 
@@ -92,6 +93,17 @@ export const deleteCognitoUser = async (username: string): Promise<void> => {
 export const getCognitoUser = async (username: string) => {
   return client.send(
     new AdminGetUserCommand({
+      UserPoolId: config.cognito.userPoolId,
+      Username: username,
+    }),
+  )
+}
+
+// Resets the user's password — Cognito sends them a new temporary password via email,
+// putting the user back into FORCE_CHANGE_PASSWORD state
+export const resetCognitoUserPassword = async (username: string): Promise<void> => {
+  await client.send(
+    new AdminResetUserPasswordCommand({
       UserPoolId: config.cognito.userPoolId,
       Username: username,
     }),
