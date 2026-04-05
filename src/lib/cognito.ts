@@ -6,7 +6,7 @@ import {
   AdminDeleteUserCommand,
   AdminGetUserCommand,
   AdminUpdateUserAttributesCommand,
-  AdminResetUserPasswordCommand,
+  AdminSetUserPasswordCommand,
 } from "@aws-sdk/client-cognito-identity-provider"
 import { config } from "./config"
 
@@ -99,15 +99,19 @@ export const getCognitoUser = async (username: string) => {
   )
 }
 
-// Resets the user's password — Cognito sends them a new temporary password via email,
-// putting the user back into FORCE_CHANGE_PASSWORD state
-export const resetCognitoUserPassword = async (username: string): Promise<void> => {
+// Sets a temporary password and puts the user into FORCE_CHANGE_PASSWORD state.
+// On next login they'll be prompted to set a new password.
+export const resetCognitoUserPassword = async (username: string): Promise<string> => {
+  const tempPassword = generateTempPassword()
   await client.send(
-    new AdminResetUserPasswordCommand({
+    new AdminSetUserPasswordCommand({
       UserPoolId: config.cognito.userPoolId,
       Username: username,
+      Password: tempPassword,
+      Permanent: false, // forces FORCE_CHANGE_PASSWORD state
     }),
   )
+  return tempPassword
 }
 
 // ── Client Pool helpers (WayBeirut-Clients) ──

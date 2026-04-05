@@ -38,7 +38,7 @@ provider:
             - cognito-idp:AdminDeleteUser
             - cognito-idp:AdminGetUser
             - cognito-idp:AdminUpdateUserAttributes
-            - cognito-idp:AdminResetUserPassword
+            - cognito-idp:AdminSetUserPassword
           Resource:
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:CLIENT_COGNITO_USER_POOL_ID}
@@ -513,6 +513,168 @@ functions:
     events:
       - httpApi:
           path: /tutors/{id}
+          method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
+
+  # ── Schedule ──
+  getSchedule:
+    handler: src/functions/schedule/handler.getSchedule
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  getScheduleSlot:
+    handler: src/functions/schedule/handler.getScheduleSlot
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule/{id}
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  createScheduleSlot:
+    handler: src/functions/schedule/handler.createScheduleSlot
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule
+          method: POST
+          authorizer:
+            name: cognitoAuthorizer
+
+  updateScheduleSlot:
+    handler: src/functions/schedule/handler.updateScheduleSlot
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule/{id}
+          method: PUT
+          authorizer:
+            name: cognitoAuthorizer
+
+  deleteScheduleSlot:
+    handler: src/functions/schedule/handler.deleteScheduleSlot
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule/{id}
+          method: DELETE
+          authorizer:
+            name: cognitoAuthorizer
+
+  # ── Items (Client Artwork Tracking) ──
+  getItems:
+    handler: src/functions/items/handler.getItems
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /items
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  getItem:
+    handler: src/functions/items/handler.getItem
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /items/{id}
+          method: GET
+          authorizer:
+            name: cognitoAuthorizer
+
+  createItem:
+    handler: src/functions/items/handler.createItem
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /items
+          method: POST
+          authorizer:
+            name: cognitoAuthorizer
+
+  updateItem:
+    handler: src/functions/items/handler.updateItem
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /items/{id}
+          method: PUT
+          authorizer:
+            name: cognitoAuthorizer
+
+  deleteItem:
+    handler: src/functions/items/handler.deleteItem
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /items/{id}
           method: DELETE
           authorizer:
             name: cognitoAuthorizer

@@ -128,6 +128,58 @@ export interface UpdateUserPackageDto {
 export type CreateTutorDto = Omit<Tutor, "id">
 export type UpdateTutorDto = Partial<CreateTutorDto>
 
+// ── Schedule ──
+
+export interface ScheduleSlot {
+  id: number
+  day_of_week: number // 0=Monday, 6=Sunday
+  start_time: string // "HH:MM:SS"
+  end_time: string
+  title: string
+  tutor_id: number | null
+  package_id: number | null
+  created_at: string
+  updated_at: string
+}
+
+// Joined with tutor and package names for API response
+export interface ScheduleSlotJoined extends ScheduleSlot {
+  tutor_name: string | null
+  package_name: string | null
+}
+
+export interface CreateScheduleSlotDto {
+  day_of_week: number
+  start_time: string
+  end_time: string
+  title: string
+  tutor_id?: number | null
+  package_id?: number | null
+}
+
+export type UpdateScheduleSlotDto = Partial<CreateScheduleSlotDto>
+
+// ── Items (Client Artwork) ──
+
+export type ItemStage = "drying" | "bisque fired" | "waiting glaze" | "glaze fired" | "ready"
+
+export interface Item {
+  id: number
+  user_id: string
+  stage: ItemStage
+  created_at: string
+  updated_at: string
+}
+
+// Joined with user name for API response
+export interface ItemJoined extends Item {
+  user_name: string
+}
+
+import type { CreateItemSchema, UpdateItemSchema } from "./schemas/item.schema"
+export type CreateItemDto = z.infer<typeof CreateItemSchema>
+export type UpdateItemDto = z.infer<typeof UpdateItemSchema>
+
 // ── Accounts ──
 
 export type AccountRole = "admin" | "studio-manager"

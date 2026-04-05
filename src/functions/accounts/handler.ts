@@ -141,10 +141,13 @@ export const resetAccountPassword = async (event: APIGatewayProxyEventV2): Promi
     })
     if (!existing) return createResponse(404, { error: "Account not found" })
 
-    // Reset password — Cognito sends a verification code to the user's email
-    await cognito.resetCognitoUserPassword(existing.email)
+    // Set a temp password — puts user into FORCE_CHANGE_PASSWORD state
+    const tempPassword = await cognito.resetCognitoUserPassword(existing.email)
 
-    return createResponse(200, { message: "Password reset initiated. The user will receive an email with a verification code." })
+    return createResponse(200, {
+      message: "Password has been reset. Share the temporary password with the user.",
+      tempPassword,
+    })
   } catch (err) {
     return handleError(err)
   }

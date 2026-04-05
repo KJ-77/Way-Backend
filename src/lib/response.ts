@@ -33,6 +33,10 @@ export const handleError = (err: unknown): APIGatewayProxyResultV2 => {
   if (error.code === "23503") {
     return createResponse(400, { error: "Foreign key violation", message: error.message })
   }
+  // Exclusion constraint violation — overlapping schedule slots
+  if (error.code === "23P01") {
+    return createResponse(409, { error: "Schedule conflict", message: "Another class is already scheduled during this time slot" })
+  }
 
   // Cognito errors
   if (error.name === "UsernameExistsException") {
