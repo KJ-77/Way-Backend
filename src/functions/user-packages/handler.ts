@@ -5,7 +5,7 @@ import * as userPackageService from "../../services/userPackageService"
 
 // Derive status from row data instead of storing it in the DB.
 // Checks depleted first (sessions or weight exhausted), then expiry.
-function computeStatus(row: UserPackageJoined): PackageStatus {
+export function computeStatus(row: UserPackageJoined): PackageStatus {
   if (row.remaining_sessions <= 0) return "depleted"
   if (row.weight_included > 0 && row.remaining_weight <= 0) return "depleted"
   if (new Date(row.expiry_date) < new Date()) return "expired"

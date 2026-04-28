@@ -138,9 +138,8 @@ export interface ScheduleSlot {
   day_of_week: number // 0=Monday, 6=Sunday
   start_time: string // "HH:MM:SS"
   end_time: string
-  title: string
   tutor_id: number | null
-  package: string | null // class type enum
+  package: string | null // class type enum — also serves as the slot's display name
   created_at: string
   updated_at: string
 }
@@ -154,7 +153,6 @@ export interface CreateScheduleSlotDto {
   day_of_week: number
   start_time: string
   end_time: string
-  title: string
   tutor_id?: number | null
   package?: string | null
 }
