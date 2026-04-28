@@ -11,9 +11,9 @@ export const getTutorById = async (id: number): Promise<Tutor | null> => {
 
 export const createTutor = async (data: CreateTutorDto): Promise<Tutor> => {
   const rows = await executeQuery<Tutor>(
-    `INSERT INTO tutors (full_name, email, phone)
-     VALUES ($1, $2, $3) RETURNING *`,
-    [data.full_name, data.email, data.phone]
+    `INSERT INTO tutors (full_name, email, phone, hourly_rate, specialty, notes)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [data.full_name, data.email, data.phone, data.hourly_rate ?? null, data.specialty ?? null, data.notes ?? null]
   )
   return rows[0]
 }

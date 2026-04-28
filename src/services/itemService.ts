@@ -26,8 +26,8 @@ export const getItemById = async (id: number): Promise<ItemJoined | null> => {
 
 export const createItem = async (data: CreateItemDto): Promise<ItemJoined> => {
   const rows = await executeQuery<{ id: number }>(
-    `INSERT INTO items (user_id, stage) VALUES ($1, $2) RETURNING id`,
-    [data.user_id, data.stage ?? "drying"],
+    `INSERT INTO items (user_id, stage, section, description, clay_type) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [data.user_id, data.stage ?? "drying", data.section, data.description ?? null, data.clay_type ?? null],
   )
   return (await getItemById(rows[0].id))!
 }

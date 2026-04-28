@@ -61,6 +61,9 @@ export interface Tutor {
   full_name: string
   email: string
   phone: string
+  hourly_rate: number | null  // decimal(10,2)
+  specialty: string | null
+  notes: string | null
 }
 
 // ── DTOs (for create/update — omit id and auto-generated fields) ──
@@ -137,15 +140,14 @@ export interface ScheduleSlot {
   end_time: string
   title: string
   tutor_id: number | null
-  package_id: number | null
+  package: string | null // class type enum
   created_at: string
   updated_at: string
 }
 
-// Joined with tutor and package names for API response
+// Joined with tutor name for API response
 export interface ScheduleSlotJoined extends ScheduleSlot {
   tutor_name: string | null
-  package_name: string | null
 }
 
 export interface CreateScheduleSlotDto {
@@ -154,19 +156,24 @@ export interface CreateScheduleSlotDto {
   end_time: string
   title: string
   tutor_id?: number | null
-  package_id?: number | null
+  package?: string | null
 }
 
 export type UpdateScheduleSlotDto = Partial<CreateScheduleSlotDto>
 
 // ── Items (Client Artwork) ──
 
-export type ItemStage = "drying" | "bisque fired" | "waiting glaze" | "glaze fired" | "ready"
+export type ItemStage = "drying" | "bisque fired" | "waiting glaze" | "glaze fired" | "ready" | "discarded"
+
+export type ItemSection = "Studio" | "PC"
 
 export interface Item {
   id: number
   user_id: string
   stage: ItemStage
+  section: ItemSection
+  description?: string | null
+  clay_type?: string | null
   created_at: string
   updated_at: string
 }
