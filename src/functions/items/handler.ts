@@ -53,6 +53,11 @@ export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
     if (!item) return createResponse(404, { error: "Item not found" })
     return createResponse(200, item)
   } catch (err) {
+    // Service throws with a custom statusCode for business logic errors (weight validation, etc.)
+    const error = err as Error & { statusCode?: number }
+    if (error.statusCode) {
+      return createResponse(error.statusCode, { error: error.message })
+    }
     return handleError(err)
   }
 }

@@ -5,7 +5,7 @@ import type { SessionJoined, CreateSessionDto, UpdateSessionDto } from "../lib/t
 const BASE_SELECT = `
   SELECT
     s.id, s.user_id, s.package_id,
-    s.session_nb, s.session_weight, s.attendance, s.notes, s.created_at,
+    s.session_nb, s.attendance, s.notes, s.created_at,
     u.full_name  AS user_name,
     p.package_type AS package_name
   FROM sessions s
@@ -31,7 +31,7 @@ export const getSessionsByUserId = async (userId: string): Promise<SessionJoined
  * Creates a session inside a transaction:
  * 1. Finds the oldest active subscription (user_package) for this user + package
  * 2. Validates it's not depleted or expired
- * 3. Decrements remaining_sessions by 1 and remaining_weight by session_weight
+ * 3. Decrements remaining_sessions by 1 (weight is deducted later via item stage transitions)
  * 4. Inserts the session row
  */
 export const createSession = async (data: CreateSessionDto): Promise<SessionJoined> => {
@@ -41,8 +41,8 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
 
     // Find oldest active subscription for this user+package (FIFO usage)
     const subResult = await client.query(
-      `SELECT up.id, up.remaining_sessions, up.remaining_weight, up.expiry_date,
-              p.weight_included, p.sessions_included
+      `SELECT up.id, up.remaining_sessions, up.expiry_date,
+              p.sessions_included
        FROM user_packages up
        JOIN packages p ON up.package_id = p.id
        WHERE up.user_id = $1 AND up.package_id = $2
@@ -71,32 +71,23 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
       throw Object.assign(new Error("Subscription has expired"), { statusCode: 400 })
     }
 
-    // Check if enough weight remains (only relevant when session uses weight)
-    if (data.session_weight > 0 && sub.remaining_weight < data.session_weight) {
-      throw Object.assign(
-        new Error(`Insufficient remaining weight. Available: ${sub.remaining_weight} kg, requested: ${data.session_weight} kg`),
-        { statusCode: 400 }
-      )
-    }
-
     // Auto-calculate session number: e.g. 8/8 remaining → session #1, 7/8 → #2
     const sessionNb = sub.sessions_included - sub.remaining_sessions + 1
 
-    // Decrement remaining_sessions and remaining_weight on the subscription
+    // Decrement remaining_sessions only (weight is deducted at item stage transitions)
     await client.query(
       `UPDATE user_packages
-       SET remaining_sessions = remaining_sessions - 1,
-           remaining_weight = remaining_weight - $1
-       WHERE id = $2`,
-      [data.session_weight, sub.id]
+       SET remaining_sessions = remaining_sessions - 1
+       WHERE id = $1`,
+      [sub.id]
     )
 
     // Insert the session
     const insertResult = await client.query(
-      `INSERT INTO sessions (user_id, package_id, session_nb, session_weight, attendance, notes)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO sessions (user_id, package_id, session_nb, attendance, notes)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-      [data.user_id, data.package_id, sessionNb, data.session_weight, data.attendance, data.notes ?? null]
+      [data.user_id, data.package_id, sessionNb, data.attendance, data.notes ?? null]
     )
 
     await client.query("COMMIT")
