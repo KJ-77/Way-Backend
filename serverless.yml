@@ -39,6 +39,7 @@ provider:
             - cognito-idp:AdminGetUser
             - cognito-idp:AdminUpdateUserAttributes
             - cognito-idp:AdminSetUserPassword
+            - cognito-idp:SignUp
           Resource:
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:CLIENT_COGNITO_USER_POOL_ID}
@@ -66,6 +67,8 @@ provider:
         - "https://admin.waybeirut.com"
         - "http://localhost:5173"
         - "http://127.0.0.1:5173"
+        - "http://localhost:3001"
+        - "http://127.0.0.1:3001"
       allowedHeaders:
         - Content-Type
         - Authorization
@@ -92,6 +95,20 @@ provider:
           - ${env:COGNITO_CLIENT_ID}
 
 functions:
+  # ── Auth (public, no auth required) ──
+  # POST /auth/signup — self-service client signup. Cognito.SignUp (user picks
+  # password, gets emailed a verification code) + DB insert keyed by sub.
+  # Atomic rollback if the DB insert fails.
+  signup:
+    handler: src/functions/auth/handler.signup
+    environment:
+      USER_DB_FUNCTION: ${self:service}-${self:provider.stage}-userDbOps
+    events:
+      - httpApi:
+          path: /auth/signup
+          method: POST
+          # no authorizer — public endpoint
+
   # ── Health (no auth) ──
   health:
     handler: src/functions/health/handler.health

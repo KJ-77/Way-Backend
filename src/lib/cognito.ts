@@ -7,6 +7,7 @@ import {
   AdminGetUserCommand,
   AdminUpdateUserAttributesCommand,
   AdminSetUserPasswordCommand,
+  SignUpCommand,
 } from "@aws-sdk/client-cognito-identity-provider"
 import { config } from "./config"
 
@@ -176,13 +177,54 @@ export const createClientCognitoUser = async (
   return { sub, tempPassword: tempPassword ?? null }
 }
 
-export const deleteClientCognitoUser = async (phone: string): Promise<void> => {
+export const deleteClientCognitoUser = async (username: string): Promise<void> => {
   await clientPool.send(
     new AdminDeleteUserCommand({
       UserPoolId: config.clientCognito.userPoolId,
-      Username: phone.replace(/\s+/g, ""), // normalize to match how user was created
+      // Caller passes whatever was used as Username at creation time
+      // (phone with spaces stripped for admin-created users; email for self-signup users)
+      Username: username.replace(/\s+/g, ""),
     }),
   )
+}
+
+/**
+ * Self-signup against the client pool — used by the public POST /auth/signup endpoint.
+ *
+ * Uses Cognito's unauthenticated `SignUp` API (not AdminCreateUser): the user picks their
+ * own password, Cognito emails them a verification code, and they confirm via
+ * ConfirmSignUp (called from the frontend directly with the same ClientId).
+ *
+ * Returns the new user's `sub` (used as the PK in our users table).
+ *
+ * Username choice: we pass `email` as Username because email is the auto-verified attribute
+ * on this pool. Phone goes in as an attribute. Both phone and email then work as login
+ * aliases since the pool's UsernameAttributes = [phone_number, email].
+ */
+export const clientSignUp = async (
+  email: string,
+  password: string,
+  fullName: string,
+  phone: string,
+): Promise<string> => {
+  // Strip whitespace from phone — Cognito phone_number requires E.164 with no spaces
+  const cleanPhone = phone.replace(/\s+/g, "")
+
+  const result = await clientPool.send(
+    new SignUpCommand({
+      ClientId: config.clientCognito.clientId,
+      Username: email,
+      Password: password,
+      UserAttributes: [
+        { Name: "name", Value: fullName },
+        { Name: "email", Value: email },
+        { Name: "phone_number", Value: cleanPhone },
+      ],
+    }),
+  )
+
+  if (!result.UserSub) throw new Error("Cognito SignUp succeeded but did not return UserSub")
+  return result.UserSub
 }
 
 export const updateClientCognitoUserAttributes = async (
