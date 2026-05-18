@@ -1,7 +1,12 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
+import { getAuthContext, requireRole } from "../../lib/auth"
 import type { CreatePackageDto, UpdatePackageDto } from "../../lib/types"
 import * as packageService from "../../services/packageService"
+
+// Only admins + studio managers can create/update/delete packages. Reads are public
+// so clients can browse the catalog and (eventually) subscribe.
+const PACKAGE_WRITE_ROLES = ["admin", "studio-manager"] as const
 
 export const getPackages = async (): Promise<APIGatewayProxyResultV2> => {
   try {
@@ -27,6 +32,9 @@ export const getPackage = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
 export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
+    if (denied) return denied
+
     const data = parseBody<CreatePackageDto>(event.body)
     if (!data.package_type) {
       return createResponse(400, { error: "package_type is required" })
@@ -41,6 +49,9 @@ export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIG
 
 export const updatePackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid package ID" })
 
@@ -55,6 +66,9 @@ export const updatePackage = async (event: APIGatewayProxyEventV2): Promise<APIG
 
 export const deletePackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid package ID" })
 

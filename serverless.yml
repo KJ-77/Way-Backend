@@ -292,6 +292,8 @@ functions:
             name: cognitoAuthorizer
 
   # ── Packages ──
+  # GET endpoints are public — clients browse the catalog before subscribing.
+  # Mutations are gated to admin / studio-manager via requireRole() inside the handler.
   getPackages:
     handler: src/functions/packages/handler.getPackages
     vpc:
@@ -305,8 +307,7 @@ functions:
       - httpApi:
           path: /packages
           method: GET
-          authorizer:
-            name: cognitoAuthorizer
+          # no authorizer — public endpoint
 
   getPackage:
     handler: src/functions/packages/handler.getPackage
@@ -321,8 +322,7 @@ functions:
       - httpApi:
           path: /packages/{id}
           method: GET
-          authorizer:
-            name: cognitoAuthorizer
+          # no authorizer — public endpoint
 
   createPackage:
     handler: src/functions/packages/handler.createPackage
@@ -535,6 +535,8 @@ functions:
             name: cognitoAuthorizer
 
   # ── Schedule ──
+  # GET endpoints are public — anyone (logged in or not) can view Way's weekly schedule.
+  # Mutations are gated to admin / studio-manager via requireRole() inside the handler.
   getSchedule:
     handler: src/functions/schedule/handler.getSchedule
     vpc:
@@ -548,8 +550,7 @@ functions:
       - httpApi:
           path: /schedule
           method: GET
-          authorizer:
-            name: cognitoAuthorizer
+          # no authorizer — public endpoint
 
   getScheduleSlot:
     handler: src/functions/schedule/handler.getScheduleSlot
@@ -564,8 +565,7 @@ functions:
       - httpApi:
           path: /schedule/{id}
           method: GET
-          authorizer:
-            name: cognitoAuthorizer
+          # no authorizer — public endpoint
 
   createScheduleSlot:
     handler: src/functions/schedule/handler.createScheduleSlot

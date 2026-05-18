@@ -1,7 +1,11 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
+import { getAuthContext, requireRole } from "../../lib/auth"
 import { CreateScheduleSlotSchema, UpdateScheduleSlotSchema } from "../../lib/schemas/schedule.schema"
 import * as scheduleService from "../../services/scheduleService"
+
+// Only admins + studio managers can mutate the weekly schedule. Reads are public.
+const SCHEDULE_WRITE_ROLES = ["admin", "studio-manager"] as const
 
 export const getSchedule = async (): Promise<APIGatewayProxyResultV2> => {
   try {
@@ -27,6 +31,9 @@ export const getScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<AP
 
 export const createScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    if (denied) return denied
+
     const raw = parseBody(event.body)
     const result = CreateScheduleSlotSchema.safeParse(raw)
     if (!result.success) return createResponse(400, { error: "Validation failed", issues: result.error.issues })
@@ -40,6 +47,9 @@ export const createScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
 
 export const updateScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid slot ID" })
 
@@ -57,6 +67,9 @@ export const updateScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
 
 export const deleteScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid slot ID" })
 
