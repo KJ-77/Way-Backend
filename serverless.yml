@@ -87,14 +87,27 @@ provider:
     payload: "2.0"
     disableDefaultEndpoint: false
     authorizers:
-      cognitoAuthorizer:
-        type: jwt
+      # Multi-pool Lambda authorizer — accepts tokens from BOTH admin and client Cognito pools.
+      # Source: src/functions/authorizer/handler.ts. Pool config is driven by JWT_POOLS env var.
+      # resultTtlInSeconds=0 disables caching while we're iterating in dev. For prod we
+      # should bump this to 300 (5 min) — see local/Claude/claude.md.
+      customJwtAuthorizer:
+        type: request
+        functionName: customJwtAuthorizer
         identitySource: $request.header.Authorization
-        issuerUrl: https://cognito-idp.eu-west-3.amazonaws.com/${env:COGNITO_USER_POOL_ID}
-        audience:
-          - ${env:COGNITO_CLIENT_ID}
+        enableSimpleResponses: true
+        resultTtlInSeconds: 0
 
 functions:
+  # ── Lambda Authorizer ──
+  # Verifies JWTs from any pool listed in JWT_POOLS. Lives outside the VPC because
+  # it needs internet access to fetch the Cognito JWKS endpoint on first use.
+  # See plan: local/Claude/plans wasn't copied here yet — refer to Way-Client/local/Claude/plans/lambda-authorizer.md.
+  customJwtAuthorizer:
+    handler: src/functions/authorizer/handler.handler
+    environment:
+      JWT_POOLS: '[{"userPoolId":"${env:COGNITO_USER_POOL_ID}","clientId":"${env:COGNITO_CLIENT_ID}","label":"admin"},{"userPoolId":"${env:CLIENT_COGNITO_USER_POOL_ID}","clientId":"${env:CLIENT_COGNITO_CLIENT_ID}","label":"client"}]'
+
   # ── Auth (public, no auth required) ──
   # POST /auth/signup — self-service client signup. Cognito.SignUp (user picks
   # password, gets emailed a verification code) + DB insert keyed by sub.
@@ -139,7 +152,7 @@ functions:
           path: /dashboard
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Users ──
   # DB-only read operations stay inside VPC
@@ -157,12 +170,12 @@ functions:
           path: /users
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
       - httpApi:
           path: /users/{id}
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # Internal DB Lambda — invoked by Cognito-facing user handlers, no HTTP events
   userDbOps:
@@ -186,7 +199,7 @@ functions:
           path: /users
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateUser:
     handler: src/functions/users/handler.updateUser
@@ -197,7 +210,7 @@ functions:
           path: /users/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteUser:
     handler: src/functions/users/handler.deleteUser
@@ -208,7 +221,7 @@ functions:
           path: /users/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Sessions ──
   getSessions:
@@ -225,7 +238,7 @@ functions:
           path: /sessions
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   getSession:
     handler: src/functions/sessions/handler.getSession
@@ -241,7 +254,7 @@ functions:
           path: /sessions/{id}
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   createSession:
     handler: src/functions/sessions/handler.createSession
@@ -257,7 +270,7 @@ functions:
           path: /sessions
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateSession:
     handler: src/functions/sessions/handler.updateSession
@@ -273,7 +286,7 @@ functions:
           path: /sessions/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteSession:
     handler: src/functions/sessions/handler.deleteSession
@@ -289,7 +302,7 @@ functions:
           path: /sessions/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Packages ──
   # GET endpoints are public — clients browse the catalog before subscribing.
@@ -338,7 +351,7 @@ functions:
           path: /packages
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updatePackage:
     handler: src/functions/packages/handler.updatePackage
@@ -354,7 +367,7 @@ functions:
           path: /packages/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deletePackage:
     handler: src/functions/packages/handler.deletePackage
@@ -370,7 +383,7 @@ functions:
           path: /packages/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── User Packages (Subscriptions) ──
   getUserPackages:
@@ -387,7 +400,7 @@ functions:
           path: /user-packages
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   getUserPackage:
     handler: src/functions/user-packages/handler.getUserPackage
@@ -403,7 +416,7 @@ functions:
           path: /user-packages/{id}
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   createUserPackage:
     handler: src/functions/user-packages/handler.createUserPackage
@@ -419,7 +432,7 @@ functions:
           path: /user-packages
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateUserPackage:
     handler: src/functions/user-packages/handler.updateUserPackage
@@ -435,7 +448,7 @@ functions:
           path: /user-packages/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteUserPackage:
     handler: src/functions/user-packages/handler.deleteUserPackage
@@ -451,7 +464,7 @@ functions:
           path: /user-packages/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Tutors ──
   getTutors:
@@ -468,7 +481,7 @@ functions:
           path: /tutors
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   getTutor:
     handler: src/functions/tutors/handler.getTutor
@@ -484,7 +497,7 @@ functions:
           path: /tutors/{id}
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   createTutor:
     handler: src/functions/tutors/handler.createTutor
@@ -500,7 +513,7 @@ functions:
           path: /tutors
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateTutor:
     handler: src/functions/tutors/handler.updateTutor
@@ -516,7 +529,7 @@ functions:
           path: /tutors/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteTutor:
     handler: src/functions/tutors/handler.deleteTutor
@@ -532,7 +545,7 @@ functions:
           path: /tutors/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Schedule ──
   # GET endpoints are public — anyone (logged in or not) can view Way's weekly schedule.
@@ -581,7 +594,7 @@ functions:
           path: /schedule
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateScheduleSlot:
     handler: src/functions/schedule/handler.updateScheduleSlot
@@ -597,7 +610,7 @@ functions:
           path: /schedule/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteScheduleSlot:
     handler: src/functions/schedule/handler.deleteScheduleSlot
@@ -613,7 +626,7 @@ functions:
           path: /schedule/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Items (Client Artwork Tracking) ──
   getItems:
@@ -630,7 +643,7 @@ functions:
           path: /items
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   getItem:
     handler: src/functions/items/handler.getItem
@@ -646,7 +659,7 @@ functions:
           path: /items/{id}
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   createItem:
     handler: src/functions/items/handler.createItem
@@ -662,7 +675,7 @@ functions:
           path: /items
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateItem:
     handler: src/functions/items/handler.updateItem
@@ -678,7 +691,7 @@ functions:
           path: /items/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteItem:
     handler: src/functions/items/handler.deleteItem
@@ -694,7 +707,7 @@ functions:
           path: /items/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # ── Accounts ──
   # DB-only operations stay inside VPC
@@ -712,12 +725,12 @@ functions:
           path: /accounts
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
       - httpApi:
           path: /accounts/{id}
           method: GET
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # Internal DB Lambda — invoked by Cognito-facing handlers, no HTTP events
   accountDbOps:
@@ -745,7 +758,7 @@ functions:
           path: /accounts/sync
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # Cognito-facing operations live OUTSIDE VPC (need internet for Cognito API)
   # They invoke accountDbOps Lambda for DB writes
@@ -758,7 +771,7 @@ functions:
           path: /accounts
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   updateAccount:
     handler: src/functions/accounts/handler.updateAccount
@@ -769,7 +782,7 @@ functions:
           path: /accounts/{id}
           method: PUT
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   deleteAccount:
     handler: src/functions/accounts/handler.deleteAccount
@@ -780,7 +793,7 @@ functions:
           path: /accounts/{id}
           method: DELETE
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer
 
   # Admin-initiated password reset — calls Cognito AdminResetUserPassword
   resetAccountPassword:
@@ -792,4 +805,4 @@ functions:
           path: /accounts/{id}/reset-password
           method: POST
           authorizer:
-            name: cognitoAuthorizer
+            name: customJwtAuthorizer

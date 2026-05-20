@@ -1,7 +1,13 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
+import { getAuthContext, requireRole } from "../../lib/auth"
 import type { CreateUserPackageDto, UpdateUserPackageDto, PackageStatus, UserPackageJoined } from "../../lib/types"
 import * as userPackageService from "../../services/userPackageService"
+
+// Admin/studio-manager can create, update, and (admin-only) delete subscriptions.
+// Clients can READ their own subscriptions only — never mutate.
+const SUBSCRIPTION_WRITE_ROLES = ["admin", "studio-manager"]
+const SUBSCRIPTION_DELETE_ROLES = ["admin"]
 
 // Derive status from row data instead of storing it in the DB.
 // Checks depleted first (sessions or weight exhausted), then expiry.
@@ -16,7 +22,16 @@ export const getUserPackages = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
-    const userId = getQueryParam(event, "user_id")
+    const auth = getAuthContext(event)
+    if (!auth) return createResponse(401, { error: "Unauthorized" })
+
+    // Clients can only see their own subscriptions — force the filter to auth.sub
+    // regardless of any user_id query param they passed. Admin/studio-manager honors
+    // the query param (or lists all when omitted).
+    const userId = auth.source_pool === "client"
+      ? auth.sub
+      : getQueryParam(event, "user_id")
+
     const rows = userId
       ? await userPackageService.getUserPackagesByUserId(userId)
       : await userPackageService.getAllUserPackages()
@@ -31,11 +46,20 @@ export const getUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
+    const auth = getAuthContext(event)
+    if (!auth) return createResponse(401, { error: "Unauthorized" })
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid subscription ID" })
 
     const row = await userPackageService.getUserPackageById(id)
     if (!row) return createResponse(404, { error: "Subscription not found" })
+
+    // Ownership enforcement — clients can only view their own subscriptions
+    if (auth.source_pool === "client" && row.user_id !== auth.sub) {
+      return createResponse(403, { error: "Forbidden" })
+    }
+
     return createResponse(200, { ...row, status: computeStatus(row) })
   } catch (err) {
     return handleError(err)
@@ -46,6 +70,9 @@ export const createUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...SUBSCRIPTION_WRITE_ROLES)
+    if (denied) return denied
+
     const data = parseBody<CreateUserPackageDto>(event.body)
     if (!data.user_id || !data.package_id) {
       return createResponse(400, { error: "user_id and package_id are required" })
@@ -63,6 +90,9 @@ export const updateUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...SUBSCRIPTION_WRITE_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid subscription ID" })
 
@@ -79,6 +109,9 @@ export const deleteUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...SUBSCRIPTION_DELETE_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid subscription ID" })
 

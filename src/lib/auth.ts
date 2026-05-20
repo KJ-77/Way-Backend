@@ -5,29 +5,25 @@ export interface AuthContext {
   sub: string
   email: string
   groups: string[]
+  source_pool: string // "admin" | "client" — which Cognito pool issued the token
 }
 
+// HTTP API v2 Lambda authorizers with `enableSimpleResponses: true` expose their
+// returned context object at event.requestContext.authorizer.lambda — not the
+// `jwt.claims` path used by the built-in JWT authorizer.
 export const getAuthContext = (event: APIGatewayProxyEventV2): AuthContext | null => {
-  const claims = (event.requestContext as any)?.authorizer?.jwt?.claims
-  if (!claims) return null
+  const ctx = (event.requestContext as any)?.authorizer?.lambda
+  if (!ctx) return null
 
-  // cognito:groups can be a string, an array, or absent
-  let groups: string[] = []
-  const rawGroups = claims["cognito:groups"]
-  if (rawGroups) {
-    if (Array.isArray(rawGroups)) {
-      groups = rawGroups
-    } else if (typeof rawGroups === "string") {
-      // Could be a single group or a stringified array like "[admin studio-manager]"
-      const cleaned = rawGroups.replace(/[\[\]]/g, "").trim()
-      groups = cleaned ? cleaned.split(/[\s,]+/) : []
-    }
-  }
+  // groups arrives as a comma-joined string from the authorizer (simpleResponse
+  // context values must be strings). Split back into an array here.
+  const groups = ctx.groups ? String(ctx.groups).split(",").filter(Boolean) : []
 
   return {
-    sub: claims.sub,
-    email: claims.email || claims.username || "",
+    sub: ctx.sub,
+    email: ctx.email || "",
     groups,
+    source_pool: ctx.source_pool,
   }
 }
 
