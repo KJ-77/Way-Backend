@@ -6,6 +6,7 @@ export const CreateScheduleSlotSchema = z.object({
   end_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
   tutor_id: z.number().int().positive().nullable().optional(),
   package: z.string().min(1).nullable().optional(), // class type enum — also serves as the slot's display name
+  is_fully_booked: z.boolean().optional(),
 })
 
 export const UpdateScheduleSlotSchema = CreateScheduleSlotSchema.partial()

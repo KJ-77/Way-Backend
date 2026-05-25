@@ -58,12 +58,16 @@ export const createUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
     } catch (dbErr) {
       // DB failed — rollback Cognito user to avoid orphan
       try {
-        await cognito.deleteClientCognitoUser(data.phone)
+        const deleted = await cognito.deleteClientCognitoUser(data.phone, data.email)
+        if (!deleted) {
+          // User not found in Cognito — this shouldn't happen since we just created it, but log it
+          console.warn(`Cognito user not found during rollback: phone=${data.phone}, email=${data.email}`)
+        }
       } catch (rollbackErr) {
-        // Rollback also failed — return explicit error so admin knows which phone to clean up
+        // Rollback also failed — return explicit error so admin knows what to clean up
         return createResponse(500, {
           error: "critical_rollback_failed",
-          message: `Cognito user created but DB insert AND rollback failed. Manually delete Cognito user for phone: ${data.phone}`,
+          message: `Cognito user created but DB insert AND rollback failed. Manually delete Cognito user for phone: ${data.phone} or email: ${data.email}`,
         })
       }
       return createResponse(500, {
@@ -104,7 +108,7 @@ export const updateUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
     if (result.data.email && result.data.email !== existing.email) cognitoAttrs.email = result.data.email
 
     if (Object.keys(cognitoAttrs).length > 0) {
-      await cognito.updateClientCognitoUserAttributes(existing.phone, cognitoAttrs)
+      await cognito.updateClientCognitoUserAttributes(existing.phone, existing.email, cognitoAttrs)
     }
 
     // Update DB via Lambda
@@ -136,8 +140,17 @@ export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
     })
     if (!existing) return createResponse(404, { error: "User not found" })
 
-    // Delete from Cognito first
-    await cognito.deleteClientCognitoUser(existing.phone)
+    // Delete from Cognito first (tolerant of missing Cognito user — may not exist if signup/creation failed)
+    try {
+      const deleted = await cognito.deleteClientCognitoUser(existing.phone, existing.email)
+      if (!deleted) {
+        // User not found in Cognito by either phone or email — log and proceed to DB cleanup
+        console.warn(`Cognito user not found for deletion: phone=${existing.phone}, email=${existing.email}`)
+      }
+    } catch (cognitoErr) {
+      // Cognito deletion failed for reasons other than user not found — log but don't block DB deletion
+      console.error(`Failed to delete Cognito user: ${cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)}`)
+    }
 
     // Delete from DB
     await invokeLambda(DB_FUNCTION, {

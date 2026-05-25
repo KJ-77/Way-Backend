@@ -177,15 +177,45 @@ export const createClientCognitoUser = async (
   return { sub, tempPassword: tempPassword ?? null }
 }
 
-export const deleteClientCognitoUser = async (username: string): Promise<void> => {
-  await clientPool.send(
-    new AdminDeleteUserCommand({
-      UserPoolId: config.clientCognito.userPoolId,
-      // Caller passes whatever was used as Username at creation time
-      // (phone with spaces stripped for admin-created users; email for self-signup users)
-      Username: username.replace(/\s+/g, ""),
-    }),
-  )
+// Deletes a client Cognito user — tries phone first (admin-created), then email (self-signup) on failure.
+// Returns true if deleted, false if not found via either username.
+export const deleteClientCognitoUser = async (phone: string, email?: string): Promise<boolean> => {
+  const normalizedPhone = phone.replace(/\s+/g, "")
+
+  try {
+    await clientPool.send(
+      new AdminDeleteUserCommand({
+        UserPoolId: config.clientCognito.userPoolId,
+        Username: normalizedPhone, // try phone first (admin-created users)
+      }),
+    )
+    return true
+  } catch (err) {
+    // If phone not found and we have email, try email (self-signup users)
+    if (email && err instanceof Error && err.name === "UserNotFoundException") {
+      try {
+        await clientPool.send(
+          new AdminDeleteUserCommand({
+            UserPoolId: config.clientCognito.userPoolId,
+            Username: email,
+          }),
+        )
+        return true
+      } catch (emailErr) {
+        // email attempt also failed — return false to signal not found
+        if (emailErr instanceof Error && emailErr.name === "UserNotFoundException") {
+          return false
+        }
+        throw emailErr
+      }
+    }
+
+    // No email fallback or non-UserNotFoundException error
+    if (err instanceof Error && err.name === "UserNotFoundException") {
+      return false
+    }
+    throw err
+  }
 }
 
 /**
@@ -227,8 +257,10 @@ export const clientSignUp = async (
   return result.UserSub
 }
 
+// Updates client Cognito user attributes — tries phone first (admin-created), then email (self-signup) on failure.
 export const updateClientCognitoUserAttributes = async (
-  phone: string, // DB phone (may have spaces) — normalized to match Cognito username
+  phone: string, // DB phone (may have spaces) — used as username for admin-created users
+  email: string | undefined, // DB email (optional) — used as username for self-signup users
   attrs: { fullName?: string; phone?: string; email?: string },
 ): Promise<void> => {
   const userAttributes: { Name: string; Value: string }[] = []
@@ -241,11 +273,33 @@ export const updateClientCognitoUserAttributes = async (
   }
   if (userAttributes.length === 0) return
 
-  await clientPool.send(
-    new AdminUpdateUserAttributesCommand({
-      UserPoolId: config.clientCognito.userPoolId,
-      Username: phone.replace(/\s+/g, ""), // normalize to match how user was created
-      UserAttributes: userAttributes,
-    }),
-  )
+  const normalizedPhone = phone.replace(/\s+/g, "")
+
+  try {
+    await clientPool.send(
+      new AdminUpdateUserAttributesCommand({
+        UserPoolId: config.clientCognito.userPoolId,
+        Username: normalizedPhone, // try phone first (admin-created users)
+        UserAttributes: userAttributes,
+      }),
+    )
+  } catch (err) {
+    // If phone not found, try email (self-signup users)
+    if (err instanceof Error && err.name === "UserNotFoundException") {
+      try {
+        await clientPool.send(
+          new AdminUpdateUserAttributesCommand({
+            UserPoolId: config.clientCognito.userPoolId,
+            Username: email,
+            UserAttributes: userAttributes,
+          }),
+        )
+      } catch (emailErr) {
+        // Both attempts failed — re-throw original phone error
+        throw err
+      }
+    } else {
+      throw err
+    }
+  }
 }

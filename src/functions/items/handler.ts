@@ -5,9 +5,11 @@ import { CreateItemSchema, UpdateItemSchema } from "../../lib/schemas/item.schem
 import * as itemService from "../../services/itemService"
 
 // Admin/studio-manager can create + update items; admin alone can delete.
-// Clients can READ their own items only — never mutate.
+// Stage rewinds (moving the stage backward, which can trigger weight refunds)
+// are also admin-only. Clients can READ their own items only — never mutate.
 const ITEM_WRITE_ROLES = ["admin", "studio-manager"]
 const ITEM_DELETE_ROLES = ["admin"]
+const ITEM_REWIND_ROLES = ["admin"]
 
 export const getItems = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
@@ -68,7 +70,8 @@ export const createItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
 export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...ITEM_WRITE_ROLES)
+    const auth = getAuthContext(event)
+    const denied = requireRole(auth, ...ITEM_WRITE_ROLES)
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -77,6 +80,17 @@ export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
     const raw = parseBody(event.body)
     const result = UpdateItemSchema.safeParse(raw)
     if (!result.success) return createResponse(400, { error: "Validation failed", issues: result.error.issues })
+
+    // Gate stage rewinds to admins. We pre-fetch the current item to compare stages
+    // without duplicating the comparison logic inside the service.
+    if (result.data.stage) {
+      const current = await itemService.getItemById(id)
+      if (!current) return createResponse(404, { error: "Item not found" })
+      if (itemService.isStageBackward(current.stage, result.data.stage)) {
+        const rewindDenied = requireRole(auth, ...ITEM_REWIND_ROLES)
+        if (rewindDenied) return rewindDenied
+      }
+    }
 
     const item = await itemService.updateItem(id, result.data)
     if (!item) return createResponse(404, { error: "Item not found" })

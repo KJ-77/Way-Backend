@@ -58,8 +58,8 @@ export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIG
     if (denied) return denied
 
     const data = parseBody<CreateSessionDto>(event.body)
-    if (!data.user_id || !data.package_id) {
-      return createResponse(400, { error: "user_id and package_id are required" })
+    if (!data.user_package_id) {
+      return createResponse(400, { error: "user_package_id is required" })
     }
 
     const session = await sessionService.createSession(data)
@@ -87,6 +87,12 @@ export const updateSession = async (event: APIGatewayProxyEventV2): Promise<APIG
     if (!session) return createResponse(404, { error: "Session not found" })
     return createResponse(200, session)
   } catch (err) {
+    // Service throws with a custom statusCode for business logic errors
+    // (e.g. attendance transition needs a refund but no eligible subscription).
+    const error = err as Error & { statusCode?: number }
+    if (error.statusCode) {
+      return createResponse(error.statusCode, { error: error.message })
+    }
     return handleError(err)
   }
 }

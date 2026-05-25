@@ -65,6 +65,8 @@ provider:
         - "https://www.waybeirut.com"
         - "https://waybeirut.com"
         - "https://admin.waybeirut.com"
+        - "https://way-admin-gamma.vercel.app" #admin panel deployed on Vercel
+        - "https://way-one.vercel.app" #client app deployed on Vercel
         - "http://localhost:5173"
         - "http://127.0.0.1:5173"
         - "http://localhost:3001"
@@ -705,6 +707,71 @@ functions:
     events:
       - httpApi:
           path: /items/{id}
+          method: DELETE
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Clay Types (admin-managed lookup for items.clay_type) ──
+  getClayTypes:
+    handler: src/functions/clay-types/handler.getClayTypes
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /clay-types
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  createClayType:
+    handler: src/functions/clay-types/handler.createClayType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /clay-types
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  renameClayType:
+    handler: src/functions/clay-types/handler.renameClayType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /clay-types/{name}
+          method: PUT
+          authorizer:
+            name: customJwtAuthorizer
+
+  deleteClayType:
+    handler: src/functions/clay-types/handler.deleteClayType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /clay-types/{name}
           method: DELETE
           authorizer:
             name: customJwtAuthorizer

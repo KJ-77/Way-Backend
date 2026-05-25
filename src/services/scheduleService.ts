@@ -19,9 +19,16 @@ export const getSlotById = async (id: number): Promise<ScheduleSlotJoined | null
 export const createSlot = async (data: CreateScheduleSlotDto): Promise<ScheduleSlotJoined> => {
   // Insert then re-fetch with JOINs so the response includes tutor name
   const rows = await executeQuery<{ id: number }>(
-    `INSERT INTO schedule (day_of_week, start_time, end_time, tutor_id, package)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [data.day_of_week, data.start_time, data.end_time, data.tutor_id ?? null, data.package ?? null]
+    `INSERT INTO schedule (day_of_week, start_time, end_time, tutor_id, package, is_fully_booked)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [
+      data.day_of_week,
+      data.start_time,
+      data.end_time,
+      data.tutor_id ?? null,
+      data.package ?? null,
+      data.is_fully_booked ?? false,
+    ]
   )
   return (await getSlotById(rows[0].id))!
 }

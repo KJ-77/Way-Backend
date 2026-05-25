@@ -7,7 +7,7 @@ export type ReferralSource = "Referral" | "SCM" | "Walk-In"
 export type UserStatus = "Active" | "Dormant"
 export type Section = "Studio" | "PC"
 export type PackageStatus = "active" | "expired" | "depleted"
-export type Attendance = "attended" | "booked" | "cancelled"
+export type Attendance = "attended" | "booked" | "cancelled" | "cancelled - no charge"
 
 // ── Entities ──
 
@@ -39,20 +39,26 @@ export interface Package {
   price: number
 }
 
+// DB columns on the sessions table. user_id/package_id are NOT columns here —
+// they're derived via the user_package_id FK to user_packages (see
+// migration 001-sessions-user-package-fk.sql).
 export interface Session {
   id: number
-  user_id: string
-  package_id: number
+  user_package_id: number
   session_nb: number
   attendance: Attendance
   notes?: string
   created_at: string
 }
 
-// JOIN query result — includes user name + package name
+// JOIN query result — includes user/package fields derived from the user_packages
+// JOIN, plus user/package display names. This is the shape every read endpoint
+// returns and the shape the frontend consumes.
 export interface SessionJoined extends Session {
-  user_name: string
-  package_name: string
+  user_id: string         // joined via user_packages.user_id
+  package_id: number      // joined via user_packages.package_id
+  user_name: string       // joined via users.full_name
+  package_name: string    // joined via packages.package_type
 }
 
 export interface Tutor {
@@ -77,13 +83,21 @@ export type CreatePackageDto = Omit<Package, "id">
 export type UpdatePackageDto = Partial<CreatePackageDto>
 
 export interface CreateSessionDto {
-  user_id: string
-  package_id: number
+  // Caller picks the exact subscription this session is created against.
+  // Frontend resolves this from the "client → subscriptions" picker flow.
+  user_package_id: number
   attendance: Attendance
   notes?: string
 }
 
-export type UpdateSessionDto = Partial<CreateSessionDto>
+// Updates can mutate attendance, notes, and session_nb (manual correction).
+// user_package_id is immutable — moving a session between subscriptions would
+// break audit + accounting (refund would target the wrong sub).
+export interface UpdateSessionDto {
+  attendance?: Attendance
+  notes?: string | null
+  session_nb?: number
+}
 
 // ── User Packages (Subscriptions) ──
 
@@ -138,6 +152,7 @@ export interface ScheduleSlot {
   end_time: string
   tutor_id: number | null
   package: string | null // class type enum — also serves as the slot's display name
+  is_fully_booked: boolean
   created_at: string
   updated_at: string
 }
@@ -153,13 +168,14 @@ export interface CreateScheduleSlotDto {
   end_time: string
   tutor_id?: number | null
   package?: string | null
+  is_fully_booked?: boolean
 }
 
 export type UpdateScheduleSlotDto = Partial<CreateScheduleSlotDto>
 
 // ── Items (Client Artwork) ──
 
-export type ItemStage = "drying" | "bisque fired" | "waiting glaze" | "glaze fired" | "ready" | "discarded"
+export type ItemStage = "drying" | "bisque fired" | "waiting glaze" | "glaze fired" | "ready" | "picked up" | "discarded"
 
 export type ItemSection = "Studio" | "PC"
 
@@ -171,6 +187,7 @@ export interface Item {
   section: ItemSection
   description?: string | null
   clay_type?: string | null
+  glaze_type?: string | null
   mid_weight: number | null
   final_weight: number | null
   created_at: string
