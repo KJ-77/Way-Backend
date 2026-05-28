@@ -215,7 +215,9 @@ async function updateItemWithWeightDeduction(
       )
     }
 
-    // Check remaining weight on the subscription (lock row against concurrent deductions)
+    // Lock the subscription row against concurrent deductions. Note: we no longer
+    // gate the deduction on remaining_weight — weight is allowed to go negative,
+    // which signals to staff that the client owes for overage.
     const subResult = await client.query(
       "SELECT remaining_weight FROM user_packages WHERE id = $1 FOR UPDATE",
       [user_package_id],
@@ -224,14 +226,6 @@ async function updateItemWithWeightDeduction(
       throw Object.assign(
         new Error("Linked subscription not found"),
         { statusCode: 404 },
-      )
-    }
-
-    const { remaining_weight } = subResult.rows[0]
-    if (remaining_weight < totalDeduction) {
-      throw Object.assign(
-        new Error(`Insufficient remaining weight. Available: ${remaining_weight} kg, requested: ${totalDeduction} kg`),
-        { statusCode: 400 },
       )
     }
 

@@ -4,6 +4,8 @@ import {
   AdminAddUserToGroupCommand,
   AdminRemoveUserFromGroupCommand,
   AdminDeleteUserCommand,
+  AdminDisableUserCommand,
+  AdminEnableUserCommand,
   AdminGetUserCommand,
   AdminUpdateUserAttributesCommand,
   AdminSetUserPasswordCommand,
@@ -175,6 +177,62 @@ export const createClientCognitoUser = async (
   const sub = result.User?.Attributes?.find((a) => a.Name === "sub")?.Value
   if (!sub) throw new Error("Failed to get cognito_sub from created client user")
   return { sub, tempPassword: tempPassword ?? null }
+}
+
+// Soft-delete companion — disables the Cognito user so they can't log in but the
+// account record survives. Used by user soft-delete so it can be reversed cleanly.
+// Tries phone first (admin-created users), falls back to email (self-signup users).
+export const disableClientCognitoUser = async (phone: string, email?: string): Promise<boolean> => {
+  const normalizedPhone = phone.replace(/\s+/g, "")
+  try {
+    await clientPool.send(new AdminDisableUserCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: normalizedPhone,
+    }))
+    return true
+  } catch (err) {
+    if (email && err instanceof Error && err.name === "UserNotFoundException") {
+      try {
+        await clientPool.send(new AdminDisableUserCommand({
+          UserPoolId: config.clientCognito.userPoolId,
+          Username: email,
+        }))
+        return true
+      } catch (emailErr) {
+        if (emailErr instanceof Error && emailErr.name === "UserNotFoundException") return false
+        throw emailErr
+      }
+    }
+    if (err instanceof Error && err.name === "UserNotFoundException") return false
+    throw err
+  }
+}
+
+// Restores a previously-disabled client — flips the Cognito user back to ENABLED.
+export const enableClientCognitoUser = async (phone: string, email?: string): Promise<boolean> => {
+  const normalizedPhone = phone.replace(/\s+/g, "")
+  try {
+    await clientPool.send(new AdminEnableUserCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: normalizedPhone,
+    }))
+    return true
+  } catch (err) {
+    if (email && err instanceof Error && err.name === "UserNotFoundException") {
+      try {
+        await clientPool.send(new AdminEnableUserCommand({
+          UserPoolId: config.clientCognito.userPoolId,
+          Username: email,
+        }))
+        return true
+      } catch (emailErr) {
+        if (emailErr instanceof Error && emailErr.name === "UserNotFoundException") return false
+        throw emailErr
+      }
+    }
+    if (err instanceof Error && err.name === "UserNotFoundException") return false
+    throw err
+  }
 }
 
 // Deletes a client Cognito user — tries phone first (admin-created), then email (self-signup) on failure.

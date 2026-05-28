@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
-import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
+import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
 import { getAuthContext, requireRole } from "../../lib/auth"
 import { CreateUserSchema, UpdateUserSchema } from "../../lib/schemas/user.schema"
 import { invokeLambda } from "../../lib/lambda"
@@ -10,6 +10,9 @@ import type { User } from "../../lib/types"
 const DB_FUNCTION = process.env.USER_DB_FUNCTION!
 
 // ── GET /users and GET /users/:id — lives INSIDE VPC (DB only) ──
+// List filters out soft-deleted users by default. Pass ?include_deleted=true to see them all
+// (used by the admin UI's "Show deleted" toggle). Single-user GET always returns the row
+// regardless of is_active so the user-detail page can render a "Deleted" banner.
 export const getUsers = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   // Dynamic import so DB deps only load when this VPC handler runs
   const userService = await import("../../services/userService")
@@ -21,7 +24,8 @@ export const getUsers = async (event: APIGatewayProxyEventV2): Promise<APIGatewa
       if (!user) return createResponse(404, { message: "User not found" })
       return createResponse(200, user)
     }
-    const users = await userService.getAllUsers()
+    const includeDeleted = getQueryParam(event, "include_deleted") === "true"
+    const users = await userService.getAllUsers({ includeDeleted })
     return createResponse(200, users)
   } catch (err) {
     return handleError(err)
@@ -123,7 +127,9 @@ export const updateUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
   }
 }
 
-// ── DELETE /users/:id — lives OUTSIDE VPC (Cognito + invokes DB Lambda) ──
+// ── DELETE /users/:id — soft-delete ──
+// Flips is_active=false in the DB and disables the Cognito user so they can't log in.
+// History (sessions, items, subscriptions) is preserved. Reversible via POST /users/:id/restore.
 export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
@@ -140,25 +146,61 @@ export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
     })
     if (!existing) return createResponse(404, { error: "User not found" })
 
-    // Delete from Cognito first (tolerant of missing Cognito user — may not exist if signup/creation failed)
+    // Disable the Cognito login. Tolerant of missing user (e.g. signup never completed)
+    // so we still mark the DB row inactive even if the Cognito side is already gone.
     try {
-      const deleted = await cognito.deleteClientCognitoUser(existing.phone, existing.email)
-      if (!deleted) {
-        // User not found in Cognito by either phone or email — log and proceed to DB cleanup
-        console.warn(`Cognito user not found for deletion: phone=${existing.phone}, email=${existing.email}`)
+      const disabled = await cognito.disableClientCognitoUser(existing.phone, existing.email)
+      if (!disabled) {
+        console.warn(`Cognito user not found while disabling: phone=${existing.phone}, email=${existing.email}`)
       }
     } catch (cognitoErr) {
-      // Cognito deletion failed for reasons other than user not found — log but don't block DB deletion
-      console.error(`Failed to delete Cognito user: ${cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)}`)
+      console.error(`Failed to disable Cognito user: ${cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)}`)
     }
 
-    // Delete from DB
+    // Flip is_active to false in the DB
     await invokeLambda(DB_FUNCTION, {
-      action: "delete",
-      data: { id },
+      action: "setActive",
+      data: { id, is_active: false },
     })
 
-    return createResponse(200, { message: "User deleted" })
+    return createResponse(200, { message: "User soft-deleted" })
+  } catch (err) {
+    return handleError(err)
+  }
+}
+
+// ── POST /users/:id/restore — undoes soft-delete ──
+export const restoreUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  try {
+    const auth = getAuthContext(event)
+    const denied = requireRole(auth, "admin", "studio-manager")
+    if (denied) return denied
+
+    const id = getPathParam(event, "id")
+    if (!id) return createResponse(400, { error: "Invalid user ID" })
+
+    const existing = await invokeLambda<User | null>(DB_FUNCTION, {
+      action: "getById",
+      data: { id },
+    })
+    if (!existing) return createResponse(404, { error: "User not found" })
+
+    // Re-enable Cognito (tolerant — they may have been hard-deleted at some point)
+    try {
+      const enabled = await cognito.enableClientCognitoUser(existing.phone, existing.email)
+      if (!enabled) {
+        console.warn(`Cognito user not found while enabling: phone=${existing.phone}, email=${existing.email}`)
+      }
+    } catch (cognitoErr) {
+      console.error(`Failed to enable Cognito user: ${cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)}`)
+    }
+
+    const restored = await invokeLambda<User>(DB_FUNCTION, {
+      action: "setActive",
+      data: { id, is_active: true },
+    })
+
+    return createResponse(200, restored)
   } catch (err) {
     return handleError(err)
   }

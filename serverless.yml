@@ -225,6 +225,18 @@ functions:
           authorizer:
             name: customJwtAuthorizer
 
+  # Restores a soft-deleted user (flips is_active=true and re-enables their Cognito login)
+  restoreUser:
+    handler: src/functions/users/handler.restoreUser
+    environment:
+      USER_DB_FUNCTION: ${self:service}-${self:provider.stage}-userDbOps
+    events:
+      - httpApi:
+          path: /users/{id}/restore
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
   # ── Sessions ──
   getSessions:
     handler: src/functions/sessions/handler.getSessions
@@ -626,6 +638,41 @@ functions:
     events:
       - httpApi:
           path: /schedule/{id}
+          method: DELETE
+          authorizer:
+            name: customJwtAuthorizer
+
+  # Schedule overrides — per-week exceptions (fully-booked / cancelled).
+  # Upsert + clear share /schedule/{id}/override; week is in the body (PUT)
+  # or query string (DELETE).
+  upsertScheduleOverride:
+    handler: src/functions/schedule/handler.upsertScheduleOverride
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule/{id}/override
+          method: PUT
+          authorizer:
+            name: customJwtAuthorizer
+
+  deleteScheduleOverride:
+    handler: src/functions/schedule/handler.deleteScheduleOverride
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule/{id}/override
           method: DELETE
           authorizer:
             name: customJwtAuthorizer

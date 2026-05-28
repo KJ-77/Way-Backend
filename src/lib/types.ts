@@ -26,6 +26,9 @@ export interface User {
   status?: UserStatus
   section?: Section
   notes?: string
+  // Soft-delete flag — false means the client has been "deleted" from the UI but their
+  // history (sessions, items, subscriptions) is preserved. Their Cognito login is disabled.
+  is_active: boolean
   created_at: string
   updated_at: string
 }
@@ -145,6 +148,8 @@ export type UpdateTutorDto = Partial<CreateTutorDto>
 
 // ── Schedule ──
 
+// Recurring weekly template — one row per slot. Per-week state (cancellation,
+// fully-booked) lives on schedule_overrides, not here.
 export interface ScheduleSlot {
   id: number
   day_of_week: number // 0=Monday, 6=Sunday
@@ -152,7 +157,7 @@ export interface ScheduleSlot {
   end_time: string
   tutor_id: number | null
   package: string | null // class type enum — also serves as the slot's display name
-  is_fully_booked: boolean
+  deleted_at: string | null // soft-delete marker; NULL = active
   created_at: string
   updated_at: string
 }
@@ -162,16 +167,49 @@ export interface ScheduleSlotJoined extends ScheduleSlot {
   tutor_name: string | null
 }
 
+// What the calendar API returns — slot + the override (if any) for the requested
+// week, flattened. Frontend never needs to think about the join.
+export interface ScheduleSlotForWeek extends ScheduleSlotJoined {
+  week_start: string         // YYYY-MM-DD (Monday, Asia/Beirut)
+  is_fully_booked: boolean   // effective value (override.is_fully_booked OR false)
+  is_cancelled: boolean      // effective value (override.is_cancelled OR false)
+  cancel_reason: string | null
+  override_id: number | null // null when no override exists for this (slot, week)
+}
+
 export interface CreateScheduleSlotDto {
   day_of_week: number
   start_time: string
   end_time: string
   tutor_id?: number | null
   package?: string | null
-  is_fully_booked?: boolean
 }
 
 export type UpdateScheduleSlotDto = Partial<CreateScheduleSlotDto>
+
+// ── Schedule Overrides (per-week exceptions to the template) ──
+
+export interface ScheduleOverride {
+  id: number
+  slot_id: number
+  week_start: string         // YYYY-MM-DD (Monday, Asia/Beirut)
+  is_fully_booked: boolean
+  is_cancelled: boolean
+  cancel_reason: string | null
+  created_by: string | null  // accounts.id; NULL after the account is deleted
+  created_at: string
+  updated_at: string
+}
+
+// Body for PUT /schedule/:slotId/override — all override fields are individually
+// optional so admin can update just a reason without touching the flags. Service
+// merges with the existing row (if any) and validates the meaningful-row rule.
+export interface UpsertScheduleOverrideDto {
+  week_start: string
+  is_fully_booked?: boolean
+  is_cancelled?: boolean
+  cancel_reason?: string | null
+}
 
 // ── Items (Client Artwork) ──
 

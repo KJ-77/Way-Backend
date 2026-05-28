@@ -1,9 +1,13 @@
 import { z } from "zod"
 
+// Strip all whitespace so the stored value is canonical (matches what Cognito sees
+// and lets the DB-level UNIQUE(phone) constraint actually catch duplicates).
+const phoneSchema = z.string().min(1).transform((s) => s.replace(/\s+/g, ""))
+
 export const CreateUserSchema = z.object({
   // Required — minimum for admin creation
   full_name: z.string().min(1),
-  phone: z.string().min(1),
+  phone: phoneSchema,
   referral_source: z.enum(["Referral", "SCM", "Walk-In"]),
   // Optional — can be filled in later
   email: z.string().email().optional(),
@@ -28,7 +32,7 @@ export const UpdateUserSchema = CreateUserSchema.partial()
  */
 export const ClientSignUpSchema = z.object({
   full_name: z.string().min(1),
-  phone: z.string().min(1),
+  phone: phoneSchema,
   email: z.string().email(),
   password: z.string().min(8, "Password must be at least 8 characters"),
   referral_source: z.enum(["Referral", "SCM", "Walk-In"]),

@@ -4,7 +4,7 @@ import type { User } from "../../lib/types"
 
 // Payload shape for direct Lambda invocations from the Cognito-facing handlers
 interface DbOpsPayload {
-  action: "getById" | "insert" | "update" | "delete"
+  action: "getById" | "insert" | "update" | "delete" | "setActive"
   data: Record<string, unknown>
 }
 
@@ -58,11 +58,23 @@ export const userDbOps = async (event: unknown): Promise<unknown> => {
     }
 
     case "delete": {
+      // Hard-delete kept as an escape hatch — the public handler now uses setActive instead
+      // for the soft-delete flow. If a hard-delete is ever required (e.g. GDPR erasure),
+      // this branch still works.
       const rows = await executeQuery(
         "DELETE FROM users WHERE id = $1 RETURNING id",
         [payload.data.id],
       )
       return rows.length > 0
+    }
+
+    case "setActive": {
+      // Soft-delete + restore — flips is_active and bumps updated_at
+      const rows = await executeQuery<User>(
+        "UPDATE users SET is_active = $2, updated_at = NOW() WHERE id = $1 RETURNING *",
+        [payload.data.id, payload.data.is_active],
+      )
+      return rows[0] ?? null
     }
 
     default:

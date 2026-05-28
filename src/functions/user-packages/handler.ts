@@ -10,10 +10,11 @@ const SUBSCRIPTION_WRITE_ROLES = ["admin", "studio-manager"]
 const SUBSCRIPTION_DELETE_ROLES = ["admin"]
 
 // Derive status from row data instead of storing it in the DB.
-// Checks depleted first (sessions or weight exhausted), then expiry.
+// Status depends ONLY on sessions remaining + expiry date. Weight is allowed to go
+// negative — it's a signal to staff that the client has used more clay than their
+// subscription covered (and should be charged for the overage), not a depletion gate.
 export function computeStatus(row: UserPackageJoined): PackageStatus {
   if (row.remaining_sessions <= 0) return "depleted"
-  if (row.weight_included > 0 && row.remaining_weight <= 0) return "depleted"
   if (new Date(row.expiry_date) < new Date()) return "expired"
   return "active"
 }

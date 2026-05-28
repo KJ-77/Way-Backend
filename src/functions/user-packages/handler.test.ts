@@ -85,8 +85,9 @@ describe("computeStatus", () => {
     expect(computeStatus(fakeSubscription({ remaining_sessions: 0 }))).toBe("depleted")
   })
 
-  it("returns 'depleted' when remaining weight is 0", () => {
-    expect(computeStatus(fakeSubscription({ remaining_weight: 0 }))).toBe("depleted")
+  it("stays 'active' even when remaining_weight is 0 or negative — weight is no longer a gating factor", () => {
+    expect(computeStatus(fakeSubscription({ remaining_weight: 0 }))).toBe("active")
+    expect(computeStatus(fakeSubscription({ remaining_weight: -500 }))).toBe("active")
   })
 
   it("returns 'expired' when the expiry date is in the past", () => {
