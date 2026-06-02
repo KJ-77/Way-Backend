@@ -4,9 +4,12 @@ import type { User } from "../../lib/types"
 
 // Payload shape for direct Lambda invocations from the Cognito-facing handlers
 interface DbOpsPayload {
-  action: "getById" | "insert" | "update" | "delete" | "setActive"
+  action: "getById" | "insert" | "update" | "delete" | "setActive" | "checkUnique"
   data: Record<string, unknown>
 }
+
+// Result of a pre-check: which (if any) unique constraint would be violated
+type UniqueCheckResult = { phone: boolean; email: boolean }
 
 // Direct Lambda invocation handler — no HTTP, no auth (caller is trusted internal Lambda)
 export const userDbOps = async (event: unknown): Promise<unknown> => {
@@ -75,6 +78,34 @@ export const userDbOps = async (event: unknown): Promise<unknown> => {
         [payload.data.id, payload.data.is_active],
       )
       return rows[0] ?? null
+    }
+
+    case "checkUnique": {
+      // Pre-check for duplicate phone/email before we touch Cognito. The UNIQUE
+      // constraints on these columns are the source of truth — this just avoids
+      // the Cognito create → DB fail → Cognito rollback path for the common case.
+      // Races still possible (two admins, same instant) but the existing rollback
+      // in the create handler covers that edge.
+      const phone = payload.data.phone as string | null | undefined
+      const email = payload.data.email as string | null | undefined
+
+      const result: UniqueCheckResult = { phone: false, email: false }
+
+      if (phone) {
+        const rows = await executeQuery<{ exists: boolean }>(
+          "SELECT EXISTS(SELECT 1 FROM users WHERE phone = $1) AS exists",
+          [phone],
+        )
+        result.phone = rows[0]?.exists === true
+      }
+      if (email) {
+        const rows = await executeQuery<{ exists: boolean }>(
+          "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1) AS exists",
+          [email],
+        )
+        result.email = rows[0]?.exists === true
+      }
+      return result
     }
 
     default:

@@ -51,7 +51,6 @@ describe("CreateUserSchema", () => {
       loyalty: "High",
       first_visit: "2024-03-15",
       status: "Active",
-      section: "Studio",
       notes: "VIP client",
     }
     const result = CreateUserSchema.safeParse(input)

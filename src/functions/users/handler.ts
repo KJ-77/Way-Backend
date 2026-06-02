@@ -45,14 +45,37 @@ export const createUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
     const data = result.data
 
-    // Step 1: Create client in Cognito — returns sub + optional temp password
+    // Step 1: Pre-check duplicates BEFORE touching Cognito. Both phone (required) and
+    // email (optional) have UNIQUE constraints; rejecting here avoids the create-then-
+    // rollback dance for the common duplicate case. Races still fall through to the
+    // existing 23505 catch in handleError() as a safety net.
+    const dupe = await invokeLambda<{ phone: boolean; email: boolean }>(DB_FUNCTION, {
+      action: "checkUnique",
+      data: { phone: data.phone, email: data.email },
+    })
+    if (dupe.phone) {
+      return createResponse(409, {
+        error: "Duplicate phone",
+        code: "PHONE_TAKEN",
+        message: "This phone number is already registered to another client.",
+      })
+    }
+    if (dupe.email) {
+      return createResponse(409, {
+        error: "Duplicate email",
+        code: "EMAIL_TAKEN",
+        message: "This email is already in use by another client.",
+      })
+    }
+
+    // Step 2: Create client in Cognito — returns sub + optional temp password
     const { sub, tempPassword } = await cognito.createClientCognitoUser(
       data.phone,
       data.full_name,
       data.email,
     )
 
-    // Step 2: Insert into DB via VPC-bound Lambda
+    // Step 3: Insert into DB via VPC-bound Lambda
     try {
       const user = await invokeLambda<User>(DB_FUNCTION, {
         action: "insert",
@@ -60,7 +83,8 @@ export const createUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
       })
       return createResponse(201, { user, tempPassword })
     } catch (dbErr) {
-      // DB failed — rollback Cognito user to avoid orphan
+      // DB failed — rollback Cognito user to avoid orphan. This path is now rare
+      // (concurrent dupe-create race or transient DB error) but still essential.
       try {
         const deleted = await cognito.deleteClientCognitoUser(data.phone, data.email)
         if (!deleted) {
@@ -71,11 +95,13 @@ export const createUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
         // Rollback also failed — return explicit error so admin knows what to clean up
         return createResponse(500, {
           error: "critical_rollback_failed",
+          code: "ROLLBACK_FAILED",
           message: `Cognito user created but DB insert AND rollback failed. Manually delete Cognito user for phone: ${data.phone} or email: ${data.email}`,
         })
       }
       return createResponse(500, {
         error: "db_insert_failed",
+        code: "DB_INSERT_FAILED",
         message: "Failed to save user to database. Cognito user was rolled back. Please try again.",
       })
     }
@@ -128,8 +154,13 @@ export const updateUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
 }
 
 // ── DELETE /users/:id — soft-delete ──
-// Flips is_active=false in the DB and disables the Cognito user so they can't log in.
+// Flips is_active=false in the DB, disables the Cognito user so they can't log in,
+// and revokes all refresh tokens so existing sessions can't keep refreshing.
 // History (sessions, items, subscriptions) is preserved. Reversible via POST /users/:id/restore.
+//
+// Note on session revocation: this kills new logins + refresh tokens. Access tokens
+// already issued remain valid until their natural expiry (~60 min). For tighter
+// revocation we'd need an is_active check in the lambda authorizer (deferred — see CLAUDE.md).
 export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
@@ -146,15 +177,36 @@ export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
     })
     if (!existing) return createResponse(404, { error: "User not found" })
 
-    // Disable the Cognito login. Tolerant of missing user (e.g. signup never completed)
-    // so we still mark the DB row inactive even if the Cognito side is already gone.
+    // Disable the Cognito login. Tolerant of "user already gone" (returns false),
+    // but real failures (IAM, network, etc.) MUST surface — silently swallowing them
+    // is how we ended up with "deactivated" users who could still log in.
+    let disabled: boolean
     try {
-      const disabled = await cognito.disableClientCognitoUser(existing.phone, existing.email)
-      if (!disabled) {
-        console.warn(`Cognito user not found while disabling: phone=${existing.phone}, email=${existing.email}`)
-      }
+      disabled = await cognito.disableClientCognitoUser(existing.phone, existing.email)
     } catch (cognitoErr) {
-      console.error(`Failed to disable Cognito user: ${cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)}`)
+      const msg = cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)
+      console.error(`AdminDisableUser failed for user ${id} (phone=${existing.phone}): ${msg}`)
+      return createResponse(500, {
+        error: "cognito_disable_failed",
+        code: "COGNITO_DISABLE_FAILED",
+        message: `Couldn't disable Cognito login for this user. The user is NOT deactivated. Reason: ${msg}`,
+      })
+    }
+    if (!disabled) {
+      console.warn(`Cognito user not found while disabling: phone=${existing.phone}, email=${existing.email}`)
+    }
+
+    // Revoke refresh tokens so existing sessions can't extend themselves.
+    // Best-effort: if this fails we still proceed with the soft-delete because
+    // disable already blocks new logins. We just log the failure so it's visible.
+    try {
+      const signedOut = await cognito.globalSignOutClientCognitoUser(existing.phone, existing.email)
+      if (!signedOut) {
+        console.warn(`Cognito user not found during global sign-out: phone=${existing.phone}, email=${existing.email}`)
+      }
+    } catch (signOutErr) {
+      const msg = signOutErr instanceof Error ? signOutErr.message : String(signOutErr)
+      console.error(`AdminUserGlobalSignOut failed for user ${id} (phone=${existing.phone}): ${msg}`)
     }
 
     // Flip is_active to false in the DB
@@ -164,6 +216,60 @@ export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
     })
 
     return createResponse(200, { message: "User soft-deleted" })
+  } catch (err) {
+    return handleError(err)
+  }
+}
+
+// ── POST /users/:id/reset-password — admin-initiated client password reset ──
+// Generates a temporary password, sets it on the client's Cognito user with
+// Permanent=false (forces FORCE_CHANGE_PASSWORD on next login), and revokes refresh
+// tokens. Returns the temp password so the admin can read it out to the client.
+// Allowed for admin + studio-manager — same auth surface as createUser/deleteUser.
+export const resetUserPassword = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  try {
+    const auth = getAuthContext(event)
+    const denied = requireRole(auth, "admin", "studio-manager")
+    if (denied) return denied
+
+    const id = getPathParam(event, "id")
+    if (!id) return createResponse(400, { error: "Invalid user ID" })
+
+    // Lookup the user — need the phone (Cognito username for admin-created users) and
+    // optional email (fallback for self-signup users).
+    const existing = await invokeLambda<User | null>(DB_FUNCTION, {
+      action: "getById",
+      data: { id },
+    })
+    if (!existing) return createResponse(404, { error: "User not found" })
+
+    // Refuse to reset passwords on soft-deleted users — their Cognito login is disabled.
+    // The admin should restore them first, otherwise the temp password is dead on arrival.
+    if (!existing.is_active) {
+      return createResponse(409, {
+        error: "user_inactive",
+        code: "USER_INACTIVE",
+        message: "This client is deleted. Restore them before resetting their password.",
+      })
+    }
+
+    let tempPassword: string
+    try {
+      tempPassword = await cognito.resetClientCognitoUserPassword(existing.phone, existing.email)
+    } catch (cognitoErr) {
+      const msg = cognitoErr instanceof Error ? cognitoErr.message : String(cognitoErr)
+      console.error(`Password reset failed for user ${id} (phone=${existing.phone}): ${msg}`)
+      return createResponse(500, {
+        error: "cognito_reset_failed",
+        code: "COGNITO_RESET_FAILED",
+        message: `Couldn't reset the client's password. Reason: ${msg}`,
+      })
+    }
+
+    return createResponse(200, {
+      message: "Password has been reset. Share the temporary password with the client.",
+      tempPassword,
+    })
   } catch (err) {
     return handleError(err)
   }

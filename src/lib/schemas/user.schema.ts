@@ -18,7 +18,6 @@ export const CreateUserSchema = z.object({
   loyalty: z.enum(["Low", "Mid", "High"]).optional(),
   first_visit: z.string().min(1).optional(),
   status: z.enum(["Active", "Dormant"]).optional(),
-  section: z.enum(["Studio", "PC"]).optional(),
   notes: z.string().optional(),
 })
 

@@ -5,8 +5,8 @@ import { getAuthContext, requireRole } from "../../lib/auth"
 import * as clayTypeService from "../../services/clayTypeService"
 
 // Reads are open to any authenticated user — the items create/edit dialog needs the list.
-// Mutations are limited to admins + studio managers (per Khalil's spec).
-const CLAY_TYPE_WRITE_ROLES = ["admin", "studio-manager"]
+// Mutations are admin-only (clay-types schema affects every item; studio managers can't change it).
+const CLAY_TYPE_WRITE_ROLES = ["admin"]
 
 const ClayTypeNameSchema = z.object({
   name: z.string().min(1, "name is required").max(255, "name must be <= 255 chars"),

@@ -130,4 +130,75 @@ describe("handleError", () => {
     expect(result.statusCode).toBe(500)
     expect(JSON.parse(result.body as string).error).toBe("Server error")
   })
+
+  // ── Error code taxonomy ────────────────────────────────────────────────────
+  // Every error response now includes a stable `code` field that frontends use
+  // to translate the error into a user-friendly message. Tests below verify each
+  // recognized error path emits the right code.
+
+  it("emits code PHONE_TAKEN for phone unique-constraint violation", () => {
+    const pgError = Object.assign(new Error("dup phone"), {
+      code: "23505",
+      constraint: "users_phone_key",
+    })
+    const body = JSON.parse(handleError(pgError).body as string)
+    expect(body.code).toBe("PHONE_TAKEN")
+  })
+
+  it("emits code EMAIL_TAKEN for email unique-constraint violation", () => {
+    const pgError = Object.assign(new Error("dup email"), {
+      code: "23505",
+      constraint: "users_email_key",
+    })
+    const body = JSON.parse(handleError(pgError).body as string)
+    expect(body.code).toBe("EMAIL_TAKEN")
+  })
+
+  it("emits code DUPLICATE for other unique-constraint violations", () => {
+    const pgError = Object.assign(new Error("dup something"), {
+      code: "23505",
+      constraint: "some_other_key",
+    })
+    const body = JSON.parse(handleError(pgError).body as string)
+    expect(body.code).toBe("DUPLICATE")
+  })
+
+  it("emits code FK_VIOLATION for foreign-key violations", () => {
+    const pgError = Object.assign(new Error("fk"), { code: "23503" })
+    const body = JSON.parse(handleError(pgError).body as string)
+    expect(body.code).toBe("FK_VIOLATION")
+  })
+
+  it("emits code SCHEDULE_CONFLICT for exclusion-constraint violations", () => {
+    const pgError = Object.assign(new Error("excl"), { code: "23P01" })
+    const body = JSON.parse(handleError(pgError).body as string)
+    expect(body.code).toBe("SCHEDULE_CONFLICT")
+  })
+
+  it("emits code USERNAME_EXISTS for Cognito UsernameExistsException", () => {
+    const cognitoError = new Error("user exists")
+    cognitoError.name = "UsernameExistsException"
+    const body = JSON.parse(handleError(cognitoError).body as string)
+    expect(body.code).toBe("USERNAME_EXISTS")
+  })
+
+  it("emits code USER_NOT_FOUND for Cognito UserNotFoundException", () => {
+    const cognitoError = new Error("not found")
+    cognitoError.name = "UserNotFoundException"
+    const body = JSON.parse(handleError(cognitoError).body as string)
+    expect(body.code).toBe("USER_NOT_FOUND")
+  })
+
+  it("emits code INVALID_CREDENTIALS for Cognito NotAuthorizedException", () => {
+    const cognitoError = new Error("wrong password")
+    cognitoError.name = "NotAuthorizedException"
+    const result = handleError(cognitoError)
+    expect(result.statusCode).toBe(401)
+    expect(JSON.parse(result.body as string).code).toBe("INVALID_CREDENTIALS")
+  })
+
+  it("emits code SERVER_ERROR for unknown errors", () => {
+    const body = JSON.parse(handleError(new Error("boom")).body as string)
+    expect(body.code).toBe("SERVER_ERROR")
+  })
 })

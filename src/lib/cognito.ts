@@ -9,6 +9,7 @@ import {
   AdminGetUserCommand,
   AdminUpdateUserAttributesCommand,
   AdminSetUserPasswordCommand,
+  AdminUserGlobalSignOutCommand,
   SignUpCommand,
 } from "@aws-sdk/client-cognito-identity-provider"
 import { config } from "./config"
@@ -177,6 +178,98 @@ export const createClientCognitoUser = async (
   const sub = result.User?.Attributes?.find((a) => a.Name === "sub")?.Value
   if (!sub) throw new Error("Failed to get cognito_sub from created client user")
   return { sub, tempPassword: tempPassword ?? null }
+}
+
+// Force-revokes all refresh tokens for a client user. Layer-1 of session revocation:
+// without this, even after AdminDisableUser the user could (depending on Cognito's behavior
+// for disabled users mid-refresh) keep getting new access tokens for up to 30 days.
+// Access tokens already in hand remain valid until expiry — that's a separate concern.
+// Tries phone first, then email — same fallback shape as disable/delete.
+// Tolerant of UserNotFound (returns false) so the soft-delete flow can still proceed
+// even if the Cognito record is already gone.
+export const globalSignOutClientCognitoUser = async (phone: string, email?: string): Promise<boolean> => {
+  const normalizedPhone = phone.replace(/\s+/g, "")
+  try {
+    await clientPool.send(new AdminUserGlobalSignOutCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: normalizedPhone,
+    }))
+    return true
+  } catch (err) {
+    if (email && err instanceof Error && err.name === "UserNotFoundException") {
+      try {
+        await clientPool.send(new AdminUserGlobalSignOutCommand({
+          UserPoolId: config.clientCognito.userPoolId,
+          Username: email,
+        }))
+        return true
+      } catch (emailErr) {
+        if (emailErr instanceof Error && emailErr.name === "UserNotFoundException") return false
+        throw emailErr
+      }
+    }
+    if (err instanceof Error && err.name === "UserNotFoundException") return false
+    throw err
+  }
+}
+
+// Resets a client's Cognito password — generates a temp password meeting pool requirements,
+// applies it via AdminSetUserPassword with Permanent=false (puts the user in
+// FORCE_CHANGE_PASSWORD state) and revokes existing refresh tokens via global sign-out
+// so any currently-active sessions can't keep using the old credentials. Tries phone first
+// (admin-created users), falls back to email (self-signup users).
+//
+// Returns the temp password so the admin can read it out to the client (mirrors the
+// no-email creation flow). Throws on UserNotFoundException — unlike disable, there's no
+// graceful fallback because resetting a non-existent user is a real error the caller
+// needs to see.
+export const resetClientCognitoUserPassword = async (phone: string, email?: string): Promise<string> => {
+  const tempPassword = generateTempPassword()
+  const normalizedPhone = phone.replace(/\s+/g, "")
+
+  // Resolve which username Cognito has on file for this user — phone for admin-created,
+  // email for self-signup. We probe with AdminGetUser before calling set-password so
+  // we don't accidentally treat a "user not found" as a successful reset.
+  let username: string
+  try {
+    await clientPool.send(new AdminGetUserCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: normalizedPhone,
+    }))
+    username = normalizedPhone
+  } catch (err) {
+    if (email && err instanceof Error && err.name === "UserNotFoundException") {
+      // Fall back to email; if that also fails, let the error bubble — caller wants to know
+      await clientPool.send(new AdminGetUserCommand({
+        UserPoolId: config.clientCognito.userPoolId,
+        Username: email,
+      }))
+      username = email
+    } else {
+      throw err
+    }
+  }
+
+  await clientPool.send(new AdminSetUserPasswordCommand({
+    UserPoolId: config.clientCognito.userPoolId,
+    Username: username,
+    Password: tempPassword,
+    Permanent: false, // puts user into FORCE_CHANGE_PASSWORD on next login
+  }))
+
+  // Revoke refresh tokens so any active session can't keep refreshing with the old password
+  try {
+    await clientPool.send(new AdminUserGlobalSignOutCommand({
+      UserPoolId: config.clientCognito.userPoolId,
+      Username: username,
+    }))
+  } catch (signOutErr) {
+    // Non-fatal — the password is already changed, so even if global sign-out fails the
+    // existing tokens will fail authentication on their next refresh anyway.
+    console.error(`AdminUserGlobalSignOut failed during password reset for ${username}: ${signOutErr instanceof Error ? signOutErr.message : String(signOutErr)}`)
+  }
+
+  return tempPassword
 }
 
 // Soft-delete companion — disables the Cognito user so they can't log in but the

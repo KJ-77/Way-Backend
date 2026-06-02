@@ -5,7 +5,6 @@ export type Level = "Beginner" | "Middle" | "Advanced"
 export type Loyalty = "Low" | "Mid" | "High"
 export type ReferralSource = "Referral" | "SCM" | "Walk-In"
 export type UserStatus = "Active" | "Dormant"
-export type Section = "Studio" | "PC"
 export type PackageStatus = "active" | "expired" | "depleted"
 export type Attendance = "attended" | "booked" | "cancelled" | "cancelled - no charge"
 
@@ -24,7 +23,6 @@ export interface User {
   email?: string
   first_visit?: string
   status?: UserStatus
-  section?: Section
   notes?: string
   // Soft-delete flag — false means the client has been "deleted" from the UI but their
   // history (sessions, items, subscriptions) is preserved. Their Cognito login is disabled.

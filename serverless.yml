@@ -36,9 +36,12 @@ provider:
             - cognito-idp:AdminAddUserToGroup
             - cognito-idp:AdminRemoveUserFromGroup
             - cognito-idp:AdminDeleteUser
+            - cognito-idp:AdminDisableUser
+            - cognito-idp:AdminEnableUser
             - cognito-idp:AdminGetUser
             - cognito-idp:AdminUpdateUserAttributes
             - cognito-idp:AdminSetUserPassword
+            - cognito-idp:AdminUserGlobalSignOut
             - cognito-idp:SignUp
           Resource:
             - arn:aws:cognito-idp:eu-west-3:*:userpool/${env:COGNITO_USER_POOL_ID}
@@ -233,6 +236,19 @@ functions:
     events:
       - httpApi:
           path: /users/{id}/restore
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # Admin/studio-manager triggered password reset for a client — generates a temp password
+  # in the client Cognito pool and returns it so the admin can share it with the client.
+  resetUserPassword:
+    handler: src/functions/users/handler.resetUserPassword
+    environment:
+      USER_DB_FUNCTION: ${self:service}-${self:provider.stage}-userDbOps
+    events:
+      - httpApi:
+          path: /users/{id}/reset-password
           method: POST
           authorizer:
             name: customJwtAuthorizer
