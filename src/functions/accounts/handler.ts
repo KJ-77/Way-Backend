@@ -98,6 +98,23 @@ export const updateAccount = async (event: APIGatewayProxyEventV2): Promise<APIG
     })
     if (!existing) return createResponse(404, { error: "Account not found" })
 
+    // Self role-change guard: prevents an admin from demoting themselves and
+    // losing access to /accounts on their next token refresh. If they're the
+    // only admin, this would also lock the whole org out of account management.
+    // The new role only has to differ from the existing one for the guard to
+    // fire — same-role "updates" don't actually change Cognito groups.
+    if (
+      result.data.role &&
+      result.data.role !== existing.role &&
+      auth!.sub === id
+    ) {
+      return createResponse(403, {
+        error: "Forbidden",
+        code: "SELF_ROLE_CHANGE",
+        message: "You can't change your own role. Ask another admin to do it.",
+      })
+    }
+
     // If role changed, update Cognito groups
     if (result.data.role && result.data.role !== existing.role) {
       await cognito.removeUserFromGroup(existing.email, existing.role)
@@ -162,6 +179,18 @@ export const deleteAccount = async (event: APIGatewayProxyEventV2): Promise<APIG
 
     const id = getPathParam(event, "id")
     if (!id) return createResponse(400, { error: "Invalid account ID" })
+
+    // Self-delete guard: an admin deleting their own row would also wipe their
+    // Cognito user (see cognito.deleteCognitoUser below), killing their next
+    // login. If they're the only admin, the org is locked out entirely. Force
+    // the delete to come from a different admin.
+    if (auth!.sub === id) {
+      return createResponse(403, {
+        error: "Forbidden",
+        code: "SELF_DELETE",
+        message: "You can't delete your own account. Ask another admin to do it.",
+      })
+    }
 
     // Get current account from DB Lambda (need email for Cognito)
     const existing = await invokeLambda<Account | null>(DB_FUNCTION, {

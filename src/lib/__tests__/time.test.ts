@@ -7,8 +7,8 @@
 // and edge cases like Sunday-23:59 in Beirut local time.
 // ============================================================================
 
-import { describe, it, expect } from "vitest"
-import { getBeirutWeekStart, isMonday } from "../time"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { getBeirutWeekStart, isMonday, getBeirutToday, getBeirutDayOfWeek } from "../time"
 
 describe("getBeirutWeekStart", () => {
   it("returns the same Monday for a Wednesday in mid-week", () => {
@@ -59,5 +59,39 @@ describe("isMonday", () => {
 
   it("returns false for an empty string", () => {
     expect(isMonday("")).toBe(false)
+  })
+})
+
+describe("getBeirutToday", () => {
+  // Freeze "now" so the test is deterministic regardless of the wall clock.
+  // Beirut is UTC+3 in DST → 22:00 UTC on 2026-06-14 is 01:00 on 2026-06-15.
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("uses the Beirut date, not UTC", () => {
+    vi.setSystemTime(new Date("2026-06-14T22:00:00Z"))
+    expect(getBeirutToday()).toBe("2026-06-15")
+  })
+
+  it("returns a YYYY-MM-DD string with zero padding", () => {
+    vi.setSystemTime(new Date("2026-01-05T12:00:00Z"))
+    expect(getBeirutToday()).toBe("2026-01-05")
+  })
+})
+
+describe("getBeirutDayOfWeek", () => {
+  // The schedule.day_of_week convention is 0=Monday..6=Sunday. This helper
+  // converts a YYYY-MM-DD string to that same convention so we can compare
+  // against schedule rows directly.
+  it.each([
+    ["2026-06-15", 0], // Monday
+    ["2026-06-16", 1], // Tuesday
+    ["2026-06-17", 2], // Wednesday
+    ["2026-06-18", 3], // Thursday
+    ["2026-06-19", 4], // Friday
+    ["2026-06-20", 5], // Saturday
+    ["2026-06-21", 6], // Sunday
+  ])("returns the correct DOW for %s", (date, expected) => {
+    expect(getBeirutDayOfWeek(date)).toBe(expected)
   })
 })

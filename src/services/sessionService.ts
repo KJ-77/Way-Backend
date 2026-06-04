@@ -1,19 +1,32 @@
 import { pool, executeQuery } from "../lib/db"
 import type { SessionJoined, CreateSessionDto, UpdateSessionDto, Attendance } from "../lib/types"
+import { getBeirutWeekStart, getBeirutToday, getBeirutDayOfWeek } from "../lib/time"
 
 // Shared JOIN. sessions only carries user_package_id — user/package are
-// derived by walking the FK chain through user_packages.
+// derived by walking the FK chain through user_packages. The schedule join is
+// LEFT because legacy rows (pre-migration-003) have NULL schedule_slot_id.
 const BASE_SELECT = `
   SELECT
-    s.id, s.user_package_id, s.session_nb, s.attendance, s.notes, s.created_at,
+    s.id, s.user_package_id, s.schedule_slot_id, s.class_date,
+    s.session_nb, s.attendance, s.notes, s.created_at,
     up.user_id, up.package_id,
     u.full_name  AS user_name,
-    p.package_type AS package_name
+    p.package_type AS package_name,
+    sch.package    AS class_name,
+    sch.start_time AS class_start_time,
+    sch.end_time   AS class_end_time
   FROM sessions s
   JOIN user_packages up ON s.user_package_id = up.id
   JOIN users u          ON up.user_id        = u.id
   JOIN packages p       ON up.package_id     = p.id
+  LEFT JOIN schedule sch ON s.schedule_slot_id = sch.id
 `
+
+// Throws an Error with statusCode + code attached. Handler propagates both
+// into the API response so the frontend can translate via friendlyError().
+function businessError(statusCode: number, code: string, message: string): never {
+  throw Object.assign(new Error(message), { statusCode, code })
+}
 
 // "cancelled - no charge" is the only attendance value that does NOT consume a
 // remaining_session on the user's subscription. Everything else (booked/attended/
@@ -49,12 +62,14 @@ export const getSessionsByUserId = async (userId: string): Promise<SessionJoined
 
 /**
  * Creates a session inside a transaction:
- * 1. Locks the requested subscription (user_package_id) + loads capacity info
- * 2. Validates it's not expired; if attendance is counted, also that it has
+ * 1. Validates the class link (slot exists, not deleted, DOW matches class_date,
+ *    week isn't cancelled — last check only applies when attendance is counted)
+ * 2. Locks the requested subscription (user_package_id) + loads capacity info
+ * 3. Validates it's not expired; if attendance is counted, also that it has
  *    remaining sessions
- * 3. Decrements remaining_sessions by 1 UNLESS attendance is "cancelled - no charge"
- *    (no-charge sessions still anchor to a subscription but don't consume a slot)
- * 4. Inserts the session row
+ * 4. Rejects "booked" attendance for past class_dates (no booking time-travel)
+ * 5. Decrements remaining_sessions by 1 UNLESS attendance is "cancelled - no charge"
+ * 6. Inserts the session row with the schedule_slot_id + class_date link
  */
 export const createSession = async (data: CreateSessionDto): Promise<SessionJoined> => {
   const client = await pool.connect()
@@ -63,8 +78,63 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
 
     const counted = isCountedAttendance(data.attendance)
 
-    // Lock the row + fetch the capacity/expiry info we need to validate. Lock
-    // prevents concurrent session creation from racing past the depleted check.
+    // ── Class-link validation ──
+    // Lock the slot row so a concurrent soft-delete can't slip past us between
+    // the check and the insert. Reading deleted_at lets us reject retired slots.
+    const slotResult = await client.query(
+      `SELECT id, day_of_week, deleted_at
+         FROM schedule
+        WHERE id = $1
+        FOR SHARE`,
+      [data.schedule_slot_id]
+    )
+
+    if (slotResult.rows.length === 0) {
+      businessError(404, "SLOT_NOT_FOUND", "The selected class no longer exists.")
+    }
+    const slot = slotResult.rows[0] as { id: number; day_of_week: number; deleted_at: Date | null }
+
+    if (slot.deleted_at) {
+      businessError(409, "SLOT_DELETED", "The selected class has been removed from the schedule.")
+    }
+
+    // Day-of-week sanity: class_date must land on the slot's configured day.
+    const dateDow = getBeirutDayOfWeek(data.class_date)
+    if (dateDow !== slot.day_of_week) {
+      businessError(
+        400,
+        "DOW_MISMATCH",
+        "The chosen date doesn't fall on the day this class is scheduled.",
+      )
+    }
+
+    // Past-booking guard: "booked" only makes sense for today or future dates.
+    // Other attendance values (attended, cancelled, cancelled - no charge) are
+    // allowed in the past so admins can backfill historical attendance.
+    if (data.attendance === "booked" && data.class_date < getBeirutToday()) {
+      businessError(400, "PAST_BOOKING", "You can't book a class in the past.")
+    }
+
+    // Cancelled-week guard: only blocks counted attendance (booked / attended).
+    // "cancelled" and "cancelled - no charge" are still allowed so admins can
+    // record that a client had booked this occurrence before it was cancelled.
+    if (data.attendance === "booked" || data.attendance === "attended") {
+      const weekStart = getBeirutWeekStart(new Date(`${data.class_date}T00:00:00Z`))
+      const overrideResult = await client.query(
+        `SELECT is_cancelled FROM schedule_overrides
+          WHERE slot_id = $1 AND week_start = $2`,
+        [data.schedule_slot_id, weekStart]
+      )
+      if (overrideResult.rows[0]?.is_cancelled) {
+        businessError(
+          409,
+          "CLASS_CANCELLED",
+          "This class is cancelled for that week.",
+        )
+      }
+    }
+
+    // ── Subscription validation (existing logic, untouched) ──
     const subResult = await client.query(
       `SELECT up.id, up.remaining_sessions,
               p.sessions_included,
@@ -105,10 +175,18 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
     }
 
     const insertResult = await client.query(
-      `INSERT INTO sessions (user_package_id, session_nb, attendance, notes)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO sessions
+         (user_package_id, schedule_slot_id, class_date, session_nb, attendance, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
-      [data.user_package_id, sessionNb, data.attendance, data.notes ?? null]
+      [
+        data.user_package_id,
+        data.schedule_slot_id,
+        data.class_date,
+        sessionNb,
+        data.attendance,
+        data.notes ?? null,
+      ]
     )
 
     await client.query("COMMIT")
@@ -239,7 +317,60 @@ async function adjustLinkedSubscription(
   )
 }
 
+/**
+ * Deletes a session. If the deleted row had a *counted* attendance (anything
+ * other than "cancelled - no charge"), refunds +1 to the linked subscription's
+ * remaining_sessions so the client gets their session back.
+ *
+ * The refund is capped at the subscription's sold capacity (`sessions_included`)
+ * via LEAST(), so we silently no-op if the sub is somehow already at full
+ * capacity (e.g. manual DB edits) rather than failing the delete. The delete
+ * itself is the user's primary intent — don't block it on a refund edge case.
+ */
 export const deleteSession = async (id: number): Promise<boolean> => {
-  const rows = await executeQuery("DELETE FROM sessions WHERE id = $1 RETURNING id", [id])
-  return rows.length > 0
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+
+    // Lock the row we're about to delete so we can read its attendance + sub
+    // link atomically with the refund + delete.
+    const existingResult = await client.query(
+      `SELECT user_package_id, attendance FROM sessions WHERE id = $1 FOR UPDATE`,
+      [id],
+    )
+
+    if (existingResult.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return false
+    }
+
+    const existing = existingResult.rows[0] as {
+      user_package_id: number
+      attendance: Attendance
+    }
+
+    // Only refund if this session actually consumed one. "cancelled - no charge"
+    // never decremented the sub at create-time, so it has nothing to refund.
+    if (isCountedAttendance(existing.attendance)) {
+      await client.query(
+        `UPDATE user_packages up
+            SET remaining_sessions = LEAST(
+              up.remaining_sessions + 1,
+              (SELECT sessions_included FROM packages WHERE id = up.package_id)
+            )
+          WHERE up.id = $1`,
+        [existing.user_package_id],
+      )
+    }
+
+    await client.query(`DELETE FROM sessions WHERE id = $1`, [id])
+
+    await client.query("COMMIT")
+    return true
+  } catch (err) {
+    await client.query("ROLLBACK")
+    throw err
+  } finally {
+    client.release()
+  }
 }

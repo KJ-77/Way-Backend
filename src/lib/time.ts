@@ -52,3 +52,37 @@ export const isMonday = (yyyyMmDd: string): boolean => {
   const dt = new Date(`${yyyyMmDd}T00:00:00Z`)
   return !isNaN(dt.getTime()) && dt.getUTCDay() === 1
 }
+
+/**
+ * Today's date in Asia/Beirut, formatted YYYY-MM-DD. Used to compare against
+ * class_date for "is this booking in the past?" checks. String comparison
+ * works because both sides are zero-padded ISO date strings.
+ */
+export const getBeirutToday = (): string => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: STUDIO_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date())
+  const y = parts.find(p => p.type === "year")!.value
+  const m = parts.find(p => p.type === "month")!.value
+  const d = parts.find(p => p.type === "day")!.value
+  return `${y}-${m}-${d}`
+}
+
+/**
+ * Day-of-week for a YYYY-MM-DD date as interpreted in Beirut, mapped to the
+ * project's convention (0 = Monday, 6 = Sunday — matches schedule.day_of_week).
+ * Used to validate that a session's class_date actually lands on the day-of-week
+ * the slot is configured for.
+ */
+export const getBeirutDayOfWeek = (yyyyMmDd: string): number => {
+  const dt = new Date(`${yyyyMmDd}T00:00:00Z`)
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: STUDIO_TZ,
+    weekday: "short",
+  }).formatToParts(dt)
+  const weekday = parts.find(p => p.type === "weekday")!.value
+  return DAYS_FROM_MONDAY[weekday]
+}

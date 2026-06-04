@@ -50,7 +50,6 @@ describe("CreateUserSchema", () => {
       preferred_tutor: 1,
       loyalty: "High",
       first_visit: "2024-03-15",
-      status: "Active",
       notes: "VIP client",
     }
     const result = CreateUserSchema.safeParse(input)

@@ -4,7 +4,6 @@ export type Gender = "Male" | "Female"
 export type Level = "Beginner" | "Middle" | "Advanced"
 export type Loyalty = "Low" | "Mid" | "High"
 export type ReferralSource = "Referral" | "SCM" | "Walk-In"
-export type UserStatus = "Active" | "Dormant"
 export type PackageStatus = "active" | "expired" | "depleted"
 export type Attendance = "attended" | "booked" | "cancelled" | "cancelled - no charge"
 
@@ -22,7 +21,6 @@ export interface User {
   loyalty?: Loyalty
   email?: string
   first_visit?: string
-  status?: UserStatus
   notes?: string
   // Soft-delete flag — false means the client has been "deleted" from the UI but their
   // history (sessions, items, subscriptions) is preserved. Their Cognito login is disabled.
@@ -43,9 +41,16 @@ export interface Package {
 // DB columns on the sessions table. user_id/package_id are NOT columns here —
 // they're derived via the user_package_id FK to user_packages (see
 // migration 001-sessions-user-package-fk.sql).
+//
+// schedule_slot_id + class_date together identify the specific class occurrence
+// this session is for (e.g. "Wheel Throwing Explorer on 2026-06-15"). Both are
+// NULL on legacy rows that pre-date migration 003 — the CHECK constraint
+// enforces both-or-neither so we never have half-linked rows going forward.
 export interface Session {
   id: number
   user_package_id: number
+  schedule_slot_id: number | null
+  class_date: string | null  // "YYYY-MM-DD" (no time component)
   session_nb: number
   attendance: Attendance
   notes?: string
@@ -53,13 +58,16 @@ export interface Session {
 }
 
 // JOIN query result — includes user/package fields derived from the user_packages
-// JOIN, plus user/package display names. This is the shape every read endpoint
-// returns and the shape the frontend consumes.
+// JOIN, plus the schedule slot's display fields. This is the shape every read
+// endpoint returns and the shape the frontend consumes.
 export interface SessionJoined extends Session {
-  user_id: string         // joined via user_packages.user_id
-  package_id: number      // joined via user_packages.package_id
-  user_name: string       // joined via users.full_name
-  package_name: string    // joined via packages.package_type
+  user_id: string                    // joined via user_packages.user_id
+  package_id: number                 // joined via user_packages.package_id
+  user_name: string                  // joined via users.full_name
+  package_name: string               // joined via packages.package_type
+  class_name: string | null          // schedule.package (e.g. "wheel throwing explorer"); null for legacy rows
+  class_start_time: string | null    // schedule.start_time "HH:MM:SS"
+  class_end_time: string | null      // schedule.end_time "HH:MM:SS"
 }
 
 export interface Tutor {
@@ -83,22 +91,10 @@ export type UpdateUserDto = z.infer<typeof UpdateUserSchema>
 export type CreatePackageDto = Omit<Package, "id">
 export type UpdatePackageDto = Partial<CreatePackageDto>
 
-export interface CreateSessionDto {
-  // Caller picks the exact subscription this session is created against.
-  // Frontend resolves this from the "client → subscriptions" picker flow.
-  user_package_id: number
-  attendance: Attendance
-  notes?: string
-}
-
-// Updates can mutate attendance, notes, and session_nb (manual correction).
-// user_package_id is immutable — moving a session between subscriptions would
-// break audit + accounting (refund would target the wrong sub).
-export interface UpdateSessionDto {
-  attendance?: Attendance
-  notes?: string | null
-  session_nb?: number
-}
+// CreateSessionDto is derived from the Zod schema; see schemas/session.schema.ts.
+import type { CreateSessionSchema, UpdateSessionSchema } from "./schemas/session.schema"
+export type CreateSessionDto = z.infer<typeof CreateSessionSchema>
+export type UpdateSessionDto = z.infer<typeof UpdateSessionSchema>
 
 // ── User Packages (Subscriptions) ──
 

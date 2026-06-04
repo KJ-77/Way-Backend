@@ -1,8 +1,24 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
 import { getAuthContext, requireRole } from "../../lib/auth"
-import type { CreateSessionDto, UpdateSessionDto } from "../../lib/types"
+import { CreateSessionSchema, UpdateSessionSchema } from "../../lib/schemas/session.schema"
 import * as sessionService from "../../services/sessionService"
+
+// Service throws errors with statusCode + code attached (see businessError() in
+// sessionService.ts). This maps them to an API response that carries both the
+// HTTP status and the machine-readable code so the frontend can translate via
+// friendlyError(). Falls through to handleError() for unrecognised errors.
+function respondToServiceError(err: unknown): APIGatewayProxyResultV2 | null {
+  const error = err as Error & { statusCode?: number; code?: string }
+  if (!error.statusCode) return null
+  // Numeric Postgres codes (e.g. "23505") shouldn't slip through — they belong
+  // to handleError. Only forward our own SCREAMING_SNAKE_CASE codes.
+  const isOurCode = error.code && /^[A-Z_]+$/.test(error.code)
+  return createResponse(error.statusCode, {
+    error: error.message,
+    ...(isOurCode ? { code: error.code, message: error.message } : {}),
+  })
+}
 
 // Admin/studio-manager can create + update sessions; admin alone can delete.
 // Clients can READ their own sessions only — never mutate.
@@ -57,19 +73,17 @@ export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIG
     const denied = requireRole(getAuthContext(event), ...SESSION_WRITE_ROLES)
     if (denied) return denied
 
-    const data = parseBody<CreateSessionDto>(event.body)
-    if (!data.user_package_id) {
-      return createResponse(400, { error: "user_package_id is required" })
+    const raw = parseBody(event.body)
+    const result = CreateSessionSchema.safeParse(raw)
+    if (!result.success) {
+      return createResponse(400, { error: "Validation failed", issues: result.error.issues })
     }
 
-    const session = await sessionService.createSession(data)
+    const session = await sessionService.createSession(result.data)
     return createResponse(201, session)
   } catch (err) {
-    // Service throws with a custom statusCode for business logic errors
-    const error = err as Error & { statusCode?: number }
-    if (error.statusCode) {
-      return createResponse(error.statusCode, { error: error.message })
-    }
+    const mapped = respondToServiceError(err)
+    if (mapped) return mapped
     return handleError(err)
   }
 }
@@ -82,17 +96,18 @@ export const updateSession = async (event: APIGatewayProxyEventV2): Promise<APIG
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid session ID" })
 
-    const data = parseBody<UpdateSessionDto>(event.body)
-    const session = await sessionService.updateSession(id, data)
+    const raw = parseBody(event.body)
+    const result = UpdateSessionSchema.safeParse(raw)
+    if (!result.success) {
+      return createResponse(400, { error: "Validation failed", issues: result.error.issues })
+    }
+
+    const session = await sessionService.updateSession(id, result.data)
     if (!session) return createResponse(404, { error: "Session not found" })
     return createResponse(200, session)
   } catch (err) {
-    // Service throws with a custom statusCode for business logic errors
-    // (e.g. attendance transition needs a refund but no eligible subscription).
-    const error = err as Error & { statusCode?: number }
-    if (error.statusCode) {
-      return createResponse(error.statusCode, { error: error.message })
-    }
+    const mapped = respondToServiceError(err)
+    if (mapped) return mapped
     return handleError(err)
   }
 }
