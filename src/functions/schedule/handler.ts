@@ -6,13 +6,19 @@ import {
   UpdateScheduleSlotSchema,
   UpsertScheduleOverrideSchema,
   WeekStartSchema,
+  ClassDateSchema,
 } from "../../lib/schemas/schedule.schema"
-import { getBeirutWeekStart, isMonday } from "../../lib/time"
+import { getBeirutWeekStart, isMonday, getBeirutDayOfWeek } from "../../lib/time"
 import * as scheduleService from "../../services/scheduleService"
+import * as sessionService from "../../services/sessionService"
 
 // Only admins + studio managers can mutate the schedule (template or overrides).
 // Reads are public — the customer-facing site at waybeirut.com calls them too.
 const SCHEDULE_WRITE_ROLES = ["admin", "studio-manager"] as const
+
+// Class-detail (per-occurrence sessions) is staff-only: it includes client
+// names and attendance state, which the public schedule shouldn't expose.
+const CLASS_DETAIL_ROLES = ["admin", "studio-manager"] as const
 
 // ── GET /schedule?week=YYYY-MM-DD ──
 // Returns active slots merged with the override (if any) for the requested
@@ -134,6 +140,51 @@ export const upsertScheduleOverride = async (event: APIGatewayProxyEventV2): Pro
     // null = the merge resolved to "no exception," and the row was deleted.
     if (!override) return createResponse(200, { message: "Override cleared", override: null })
     return createResponse(200, override)
+  } catch (err) {
+    return handleError(err)
+  }
+}
+
+// ── GET /schedule/:id/sessions?date=YYYY-MM-DD ──
+// Class-detail payload for a specific occurrence: the slot (with override
+// merged + attending_count) plus the full session list for that date.
+// Staff-only — see CLASS_DETAIL_ROLES.
+export const getClassDetail = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  try {
+    const denied = requireRole(getAuthContext(event), ...CLASS_DETAIL_ROLES)
+    if (denied) return denied
+
+    const slotId = Number(getPathParam(event, "id"))
+    if (!slotId) return createResponse(400, { error: "Invalid slot ID" })
+
+    const dateParam = getQueryParam(event, "date")
+    if (!dateParam) return createResponse(400, { error: "Missing date query param" })
+    const parsed = ClassDateSchema.safeParse(dateParam)
+    if (!parsed.success) {
+      return createResponse(400, { error: "Invalid date param", issues: parsed.error.issues })
+    }
+    const classDate = parsed.data
+
+    // weekStart is the Beirut Monday containing classDate — used to look up the
+    // override row for this specific week.
+    const weekStart = getBeirutWeekStart(new Date(`${classDate}T00:00:00Z`))
+
+    const slot = await scheduleService.getSlotForDate(slotId, classDate, weekStart)
+    if (!slot) return createResponse(404, { error: "Schedule slot not found" })
+
+    // Day-of-week sanity: the requested date must land on the slot's day.
+    // Catches typos in deep-linked URLs early with a clear error.
+    const dateDow = getBeirutDayOfWeek(classDate)
+    if (dateDow !== slot.day_of_week) {
+      return createResponse(400, {
+        error: "Date does not fall on this class's scheduled day",
+        code: "DOW_MISMATCH",
+        message: "The chosen date doesn't fall on the day this class is scheduled.",
+      })
+    }
+
+    const sessions = await sessionService.getSessionsByClassOccurrence(slotId, classDate)
+    return createResponse(200, { slot, class_date: classDate, sessions })
   } catch (err) {
     return handleError(err)
   }

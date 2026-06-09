@@ -201,26 +201,6 @@ describe("UpdateItemSchema", () => {
     expect(result.success).toBe(false)
   })
 
-  // ── mid_weight ──
-
-  it("accepts valid positive mid_weight", () => {
-    const result = UpdateItemSchema.safeParse({ mid_weight: 1.5 })
-    expect(result.success).toBe(true)
-    if (result.success) {
-      expect(result.data.mid_weight).toBe(1.5)
-    }
-  })
-
-  it("rejects mid_weight of 0", () => {
-    const result = UpdateItemSchema.safeParse({ mid_weight: 0 })
-    expect(result.success).toBe(false)
-  })
-
-  it("rejects negative mid_weight", () => {
-    const result = UpdateItemSchema.safeParse({ mid_weight: -2 })
-    expect(result.success).toBe(false)
-  })
-
   // ── final_weight ──
 
   it("accepts valid positive final_weight", () => {
@@ -242,14 +222,6 @@ describe("UpdateItemSchema", () => {
   })
 
   // ── combined stage + weight (the real use case) ──
-
-  it("accepts stage 'waiting glaze' with mid_weight", () => {
-    const result = UpdateItemSchema.safeParse({
-      stage: "waiting glaze",
-      mid_weight: 2.0,
-    })
-    expect(result.success).toBe(true)
-  })
 
   it("accepts stage 'ready' with final_weight", () => {
     const result = UpdateItemSchema.safeParse({

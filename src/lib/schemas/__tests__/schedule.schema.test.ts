@@ -17,6 +17,7 @@ import {
   UpdateScheduleSlotSchema,
   UpsertScheduleOverrideSchema,
   WeekStartSchema,
+  ClassDateSchema,
 } from "../schedule.schema"
 
 // ── CreateScheduleSlotSchema ────────────────────────────────────────────────
@@ -100,6 +101,40 @@ describe("CreateScheduleSlotSchema", () => {
     if (result.success) {
       expect("is_fully_booked" in result.data).toBe(false)
     }
+  })
+
+  // ── capacity ──
+
+  it("accepts a positive integer capacity", () => {
+    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, capacity: 8 })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.capacity).toBe(8)
+  })
+
+  it("accepts null capacity (no headcount set)", () => {
+    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, capacity: null })
+    expect(result.success).toBe(true)
+  })
+
+  it("omits capacity when not provided", () => {
+    const result = CreateScheduleSlotSchema.safeParse(validInput)
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.capacity).toBeUndefined()
+  })
+
+  it("rejects capacity of 0", () => {
+    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, capacity: 0 })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects negative capacity", () => {
+    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, capacity: -3 })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects non-integer capacity", () => {
+    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, capacity: 7.5 })
+    expect(result.success).toBe(false)
   })
 })
 
@@ -202,5 +237,21 @@ describe("WeekStartSchema", () => {
 
   it("rejects a numeric value", () => {
     expect(WeekStartSchema.safeParse(20260525).success).toBe(false)
+  })
+})
+
+// ── ClassDateSchema (?date= for the class-detail endpoint) ──────────────────
+
+describe("ClassDateSchema", () => {
+  it("accepts any valid YYYY-MM-DD (not just Mondays)", () => {
+    expect(ClassDateSchema.safeParse("2026-05-25").success).toBe(true) // Monday
+    expect(ClassDateSchema.safeParse("2026-05-28").success).toBe(true) // Thursday
+    expect(ClassDateSchema.safeParse("2026-05-31").success).toBe(true) // Sunday
+  })
+
+  it("rejects malformed dates", () => {
+    expect(ClassDateSchema.safeParse("25-05-2026").success).toBe(false)
+    expect(ClassDateSchema.safeParse("2026/05/25").success).toBe(false)
+    expect(ClassDateSchema.safeParse("").success).toBe(false)
   })
 })

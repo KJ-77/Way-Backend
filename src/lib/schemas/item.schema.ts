@@ -42,6 +42,5 @@ export const UpdateItemSchema = z.object({
   description: z.string().nullable().optional(),
   clay_type: z.string().min(1).nullable().optional(),
   glaze_type: z.string().min(1).nullable().optional(), // captured when advancing to "glaze fired" (Studio only)
-  mid_weight: z.number().positive("mid_weight must be positive").optional(),
   final_weight: z.number().positive("final_weight must be positive").optional(),
 })

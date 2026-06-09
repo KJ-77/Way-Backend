@@ -693,6 +693,25 @@ functions:
           authorizer:
             name: customJwtAuthorizer
 
+  # Class-detail (per-occurrence) — slot + override + sessions for a date.
+  # Staff-only — exposes client names and attendance, so the public schedule
+  # endpoints don't include it.
+  getClassDetail:
+    handler: src/functions/schedule/handler.getClassDetail
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /schedule/{id}/sessions
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
   # ── Items (Client Artwork Tracking) ──
   getItems:
     handler: src/functions/items/handler.getItems

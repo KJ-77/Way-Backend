@@ -66,18 +66,14 @@ export function isStageBackward(from: ItemStage, to: ItemStage): boolean {
 /**
  * Updates an item. Three flows depending on the requested change:
  *
- *  1. Forward to (or past) a weigh-in stage (Studio only):
- *       - Crossing "waiting glaze" requires mid_weight   → deduct from subscription
- *       - Crossing "ready"          requires final_weight → deduct from subscription
- *       - Crossing "glaze fired"    requires glaze_type   (no weight deduction)
- *     A single update can cross multiple thresholds at once (e.g. drying → ready),
- *     in which case all required weights must be supplied and are deducted in one
- *     transaction.
+ *  1. Forward to (or past) a weigh-in / glaze stage (Studio only):
+ *       - Crossing "glaze fired" requires glaze_type    (no weight deduction)
+ *       - Crossing "ready"       requires final_weight  → deduct from subscription
+ *     A single update can cross both thresholds at once (e.g. waiting glaze → ready);
+ *     final_weight deducts in the same transaction as the item update.
  *
  *  2. Backward rewind (Studio only, admin-gated at handler level):
- *       - If rewinding past "waiting glaze", refund mid_weight to subscription + null on item
- *       - If rewinding past "ready",          refund final_weight to subscription + null on item
- *       - Both can apply when going from "picked up"/"ready" all the way back to "drying"/"bisque fired"
+ *       - If rewinding past "ready", refund final_weight to subscription + null on item
  *
  *  3. Standard update with no weight implications (PC items always land here).
  */
@@ -111,16 +107,9 @@ export const updateItem = async (id: number, data: UpdateItemDto): Promise<ItemJ
 
   // Only require the input if it isn't already recorded on the item (e.g. an admin
   // who rewound and re-advanced — the weight was refunded but the column kept its value).
-  const needsMidWeight = isStudio && crosses("waiting glaze") && existing.mid_weight == null
   const needsFinalWeight = isStudio && crosses("ready") && existing.final_weight == null
   const needsGlazeType = isStudio && crosses("glaze fired") && !existing.glaze_type
 
-  if (needsMidWeight && !data.mid_weight) {
-    throw Object.assign(
-      new Error("mid_weight is required when advancing past 'waiting glaze'"),
-      { statusCode: 400 },
-    )
-  }
   if (needsFinalWeight && !data.final_weight) {
     throw Object.assign(
       new Error("final_weight is required when advancing past 'ready'"),
@@ -136,30 +125,22 @@ export const updateItem = async (id: number, data: UpdateItemDto): Promise<ItemJ
 
   // ── Backward transition: detect what (if anything) needs refunding (Studio only) ──
   const rewinding = stageChange && isStageBackward(existing.stage, data.stage as ItemStage)
-  let refundMid = 0
   let refundFinal = 0
   if (rewinding && isStudio) {
-    // Old stage was past the mid weigh-in point and new stage is before it → refund mid
-    if (existing.mid_weight != null && currentRank >= STAGE_ORDER["waiting glaze"] && newRank < STAGE_ORDER["waiting glaze"]) {
-      refundMid = Number(existing.mid_weight)
-    }
-    // Same logic for final weight (entered at "ready")
+    // Old stage was at/past the final weigh-in point and new stage is before it → refund
     if (existing.final_weight != null && currentRank >= STAGE_ORDER["ready"] && newRank < STAGE_ORDER["ready"]) {
       refundFinal = Number(existing.final_weight)
     }
   }
 
   // ── Pick execution path ──
-  // Forward weight stage(s) → transactional deduction (both weights together if needed)
-  if ((needsMidWeight && data.mid_weight) || (needsFinalWeight && data.final_weight)) {
-    return updateItemWithWeightDeduction(id, data, {
-      mid: !!(needsMidWeight && data.mid_weight),
-      final: !!(needsFinalWeight && data.final_weight),
-    })
+  // Forward weight stage → transactional deduction
+  if (needsFinalWeight && data.final_weight) {
+    return updateItemWithWeightDeduction(id, data, data.final_weight)
   }
-  // Backward rewind with refund obligation → transactional refund + clear item weights
-  if (refundMid > 0 || refundFinal > 0) {
-    return updateItemWithWeightRefund(id, data, refundMid, refundFinal, existing.user_package_id)
+  // Backward rewind with refund obligation → transactional refund + clear item weight
+  if (refundFinal > 0) {
+    return updateItemWithWeightRefund(id, data, refundFinal, existing.user_package_id)
   }
 
   // Standard update — no weight involved (PC items always land here)
@@ -176,22 +157,15 @@ export const updateItem = async (id: number, data: UpdateItemDto): Promise<ItemJ
 }
 
 /**
- * Transactional item update that also deducts weight from the linked subscription.
- * Validates that the subscription has enough remaining_weight before deducting.
- *
- * `deduct.mid` and `deduct.final` may both be true when a single update skips past
- * multiple weigh-in stages (e.g. drying → ready) — the deductions sum into one
- * atomic update against the subscription's remaining_weight.
+ * Transactional item update that also deducts final_weight from the linked
+ * subscription. Weight is allowed to go negative — that signals to staff the
+ * client owes for overage.
  */
 async function updateItemWithWeightDeduction(
   id: number,
   data: UpdateItemDto,
-  deduct: { mid: boolean; final: boolean },
+  finalWeight: number,
 ): Promise<ItemJoined | null> {
-  const midAmount = deduct.mid ? data.mid_weight! : 0
-  const finalAmount = deduct.final ? data.final_weight! : 0
-  const totalDeduction = midAmount + finalAmount
-
   const client = await pool.connect()
 
   try {
@@ -215,9 +189,7 @@ async function updateItemWithWeightDeduction(
       )
     }
 
-    // Lock the subscription row against concurrent deductions. Note: we no longer
-    // gate the deduction on remaining_weight — weight is allowed to go negative,
-    // which signals to staff that the client owes for overage.
+    // Lock the subscription row against concurrent deductions.
     const subResult = await client.query(
       "SELECT remaining_weight FROM user_packages WHERE id = $1 FOR UPDATE",
       [user_package_id],
@@ -240,13 +212,10 @@ async function updateItemWithWeightDeduction(
       [id, ...values],
     )
 
-    // Single deduction covers mid + final when a stage jump crosses both thresholds
-    if (totalDeduction > 0) {
-      await client.query(
-        `UPDATE user_packages SET remaining_weight = remaining_weight - $1 WHERE id = $2`,
-        [totalDeduction, user_package_id],
-      )
-    }
+    await client.query(
+      `UPDATE user_packages SET remaining_weight = remaining_weight - $1 WHERE id = $2`,
+      [finalWeight, user_package_id],
+    )
 
     await client.query("COMMIT")
     return getItemById(id)
@@ -259,16 +228,14 @@ async function updateItemWithWeightDeduction(
 }
 
 /**
- * Transactional rewind — refunds any previously-deducted weight to the
- * subscription and nulls the corresponding weight columns on the item.
+ * Transactional rewind — refunds the previously-deducted final_weight to the
+ * subscription and nulls the column on the item.
  *
- * Always runs on Studio items only (PC items have no subscription / weight tracking).
- * Caller decides which weights to refund based on the destination stage.
+ * Studio items only (PC items have no subscription / weight tracking).
  */
 async function updateItemWithWeightRefund(
   id: number,
   data: UpdateItemDto,
-  refundMid: number,
   refundFinal: number,
   userPackageId: number | null,
 ): Promise<ItemJoined | null> {
@@ -277,11 +244,9 @@ async function updateItemWithWeightRefund(
   try {
     await client.query("BEGIN")
 
-    // Build the SET clause from the requested data fields, plus null out the
-    // weight columns we're refunding so the item is consistent with the new stage.
-    const merged: Record<string, unknown> = { ...data }
-    if (refundMid > 0) merged.mid_weight = null
-    if (refundFinal > 0) merged.final_weight = null
+    // Merge the requested data with a null-out of final_weight so the item is
+    // consistent with the new stage after the rewind.
+    const merged: Record<string, unknown> = { ...data, final_weight: null }
 
     const fields = Object.keys(merged)
     const setClauses = fields.map((key, i) => `${key} = $${i + 2}`)
@@ -294,15 +259,14 @@ async function updateItemWithWeightRefund(
     )
 
     // Refund to the subscription (lock first for safety against concurrent deductions)
-    const totalRefund = refundMid + refundFinal
-    if (totalRefund > 0 && userPackageId) {
+    if (refundFinal > 0 && userPackageId) {
       await client.query(
         "SELECT id FROM user_packages WHERE id = $1 FOR UPDATE",
         [userPackageId],
       )
       await client.query(
         "UPDATE user_packages SET remaining_weight = remaining_weight + $1 WHERE id = $2",
-        [totalRefund, userPackageId],
+        [refundFinal, userPackageId],
       )
     }
 

@@ -40,23 +40,36 @@ export const getSlotById = async (id: number): Promise<ScheduleSlotJoined | null
  * slots without an override row still appear, with effective flags defaulting
  * to false and `override_id = null`.
  *
+ * Also computes attending_count per slot for this week: a correlated subquery
+ * over sessions matching (schedule_slot_id, class_date) where class_date is
+ * the calendar date that the recurring slot lands on this week, filtered to
+ * counted attendance (booked|attended).
+ *
  * weekStart is parameterised — Postgres will use the schedule_active_idx
- * partial index for the `deleted_at IS NULL` filter and the
- * schedule_overrides_unique index (leading column = week_start) for the LEFT
- * JOIN lookup. End-to-end this is an index-only-friendly query.
+ * partial index for the `deleted_at IS NULL` filter, the
+ * schedule_overrides_unique index for the override LEFT JOIN, and the
+ * sessions_class_occurrence_idx (schedule_slot_id, class_date) for the
+ * attending-count subquery.
  */
 export const getSlotsForWeek = async (weekStart: string): Promise<ScheduleSlotForWeek[]> =>
   executeQuery<ScheduleSlotForWeek>(
     `
     SELECT
-      s.id, s.day_of_week, s.start_time, s.end_time,
+      s.id, s.day_of_week, s.start_time, s.end_time, s.capacity,
       s.tutor_id, s.package, s.deleted_at, s.created_at, s.updated_at,
       t.full_name AS tutor_name,
       $1::date AS week_start,
       COALESCE(o.is_fully_booked, false) AS is_fully_booked,
       COALESCE(o.is_cancelled, false)    AS is_cancelled,
       o.cancel_reason,
-      o.id AS override_id
+      o.id AS override_id,
+      (
+        SELECT COUNT(*)::int
+        FROM sessions sess
+        WHERE sess.schedule_slot_id = s.id
+          AND sess.class_date = ($1::date + s.day_of_week)
+          AND sess.attendance IN ('booked', 'attended')
+      ) AS attending_count
     FROM schedule s
     LEFT JOIN tutors t ON s.tutor_id = t.id
     LEFT JOIN schedule_overrides o
@@ -67,13 +80,61 @@ export const getSlotsForWeek = async (weekStart: string): Promise<ScheduleSlotFo
     [weekStart]
   )
 
+/**
+ * Returns a single slot + its override merged + attending_count for a specific
+ * class_date. Powers the class-detail page (GET /schedule/:id/sessions?date=).
+ *
+ * The handler computes weekStart from classDate (Asia/Beirut Monday) and
+ * passes both in here so the override JOIN keys on the correct week.
+ */
+export const getSlotForDate = async (
+  slotId: number,
+  classDate: string,
+  weekStart: string,
+): Promise<ScheduleSlotForWeek | null> => {
+  const rows = await executeQuery<ScheduleSlotForWeek>(
+    `
+    SELECT
+      s.id, s.day_of_week, s.start_time, s.end_time, s.capacity,
+      s.tutor_id, s.package, s.deleted_at, s.created_at, s.updated_at,
+      t.full_name AS tutor_name,
+      $1::date AS week_start,
+      COALESCE(o.is_fully_booked, false) AS is_fully_booked,
+      COALESCE(o.is_cancelled, false)    AS is_cancelled,
+      o.cancel_reason,
+      o.id AS override_id,
+      (
+        SELECT COUNT(*)::int
+        FROM sessions sess
+        WHERE sess.schedule_slot_id = s.id
+          AND sess.class_date = $3::date
+          AND sess.attendance IN ('booked', 'attended')
+      ) AS attending_count
+    FROM schedule s
+    LEFT JOIN tutors t ON s.tutor_id = t.id
+    LEFT JOIN schedule_overrides o
+      ON o.slot_id = s.id AND o.week_start = $1::date
+    WHERE s.id = $2
+    `,
+    [weekStart, slotId, classDate]
+  )
+  return rows[0] ?? null
+}
+
 // ── Template-level writes ──────────────────────────────────────────────────
 
 export const createSlot = async (data: CreateScheduleSlotDto): Promise<ScheduleSlotJoined> => {
   const rows = await executeQuery<{ id: number }>(
-    `INSERT INTO schedule (day_of_week, start_time, end_time, tutor_id, package)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [data.day_of_week, data.start_time, data.end_time, data.tutor_id ?? null, data.package ?? null]
+    `INSERT INTO schedule (day_of_week, start_time, end_time, tutor_id, package, capacity)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [
+      data.day_of_week,
+      data.start_time,
+      data.end_time,
+      data.tutor_id ?? null,
+      data.package ?? null,
+      data.capacity ?? null,
+    ]
   )
   return (await getSlotById(rows[0].id))!
 }

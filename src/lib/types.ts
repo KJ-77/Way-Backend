@@ -151,6 +151,7 @@ export interface ScheduleSlot {
   end_time: string
   tutor_id: number | null
   package: string | null // class type enum — also serves as the slot's display name
+  capacity: number | null // max headcount admin set for this slot (informational, not enforced)
   deleted_at: string | null // soft-delete marker; NULL = active
   created_at: string
   updated_at: string
@@ -169,6 +170,16 @@ export interface ScheduleSlotForWeek extends ScheduleSlotJoined {
   is_cancelled: boolean      // effective value (override.is_cancelled OR false)
   cancel_reason: string | null
   override_id: number | null // null when no override exists for this (slot, week)
+  attending_count: number    // sessions for the (slot, week) date with attendance booked|attended
+}
+
+// Returned by GET /schedule/:id/sessions?date=…
+// Single round-trip for the class-detail page: slot+override merged for the
+// specific date, plus the joined session list for it.
+export interface ClassDetailResponse {
+  slot: ScheduleSlotForWeek
+  class_date: string         // YYYY-MM-DD
+  sessions: SessionJoined[]
 }
 
 export interface CreateScheduleSlotDto {
@@ -177,6 +188,7 @@ export interface CreateScheduleSlotDto {
   end_time: string
   tutor_id?: number | null
   package?: string | null
+  capacity?: number | null
 }
 
 export type UpdateScheduleSlotDto = Partial<CreateScheduleSlotDto>
@@ -220,7 +232,6 @@ export interface Item {
   description?: string | null
   clay_type?: string | null
   glaze_type?: string | null
-  mid_weight: number | null
   final_weight: number | null
   created_at: string
   updated_at: string

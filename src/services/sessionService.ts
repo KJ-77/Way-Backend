@@ -60,6 +60,21 @@ export const getSessionsByUserId = async (userId: string): Promise<SessionJoined
     [userId]
   )
 
+// All sessions booked for a specific class occurrence (slot + date). Powers
+// the class-detail page. Returns every attendance state (booked / attended /
+// cancelled / cancelled - no charge) — UI decides how to display each.
+// Hits sessions_class_occurrence_idx (schedule_slot_id, class_date).
+export const getSessionsByClassOccurrence = async (
+  slotId: number,
+  classDate: string,
+): Promise<SessionJoined[]> =>
+  executeQuery<SessionJoined>(
+    `${BASE_SELECT}
+     WHERE s.schedule_slot_id = $1 AND s.class_date = $2::date
+     ORDER BY s.created_at ASC`,
+    [slotId, classDate]
+  )
+
 /**
  * Creates a session inside a transaction:
  * 1. Validates the class link (slot exists, not deleted, DOW matches class_date,
