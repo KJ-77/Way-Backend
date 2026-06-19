@@ -1,5 +1,5 @@
 import { pool, executeQuery } from "../lib/db"
-import type { ItemJoined, CreateItemDto, UpdateItemDto, ItemStage } from "../lib/types"
+import type { ItemJoined, CreateItemDto, UpdateItemDto, ItemStage, ItemSection } from "../lib/types"
 
 // JOIN users to include client name alongside item data
 const BASE_SELECT = `
@@ -63,8 +63,58 @@ export function isStageBackward(from: ItemStage, to: ItemStage): boolean {
   return STAGE_ORDER[to] < STAGE_ORDER[from]
 }
 
+// Amount to refund when transitioning *into* "discarded". The deduction only
+// happened at/past "ready", so anything earlier has nothing to refund. We
+// intentionally keep the weight on the item row so the deduction can be
+// replayed if the item is later un-discarded.
+export function discardRefundAmount(
+  fromStage: ItemStage,
+  section: ItemSection,
+  existingFinalWeight: number | null,
+): number {
+  if (section !== "Studio") return 0
+  if (existingFinalWeight == null) return 0
+  if (fromStage === "discarded") return 0
+  const fromRank = STAGE_ORDER[fromStage as Exclude<ItemStage, "discarded">]
+  if (fromRank < STAGE_ORDER["ready"]) return 0
+  return Number(existingFinalWeight)
+}
+
+// Amount to re-deduct when transitioning *out of* "discarded" back into a stage
+// at or past "ready". Uses the weight preserved on the item from the original
+// deduction. Pre-"ready" undiscards clear the column without touching the sub
+// (the refund already happened when going to discarded).
+export function undiscardRedeductAmount(
+  toStage: ItemStage,
+  section: ItemSection,
+  existingFinalWeight: number | null,
+): number {
+  if (section !== "Studio") return 0
+  if (existingFinalWeight == null) return 0
+  if (toStage === "discarded") return 0
+  const toRank = STAGE_ORDER[toStage as Exclude<ItemStage, "discarded">]
+  if (toRank < STAGE_ORDER["ready"]) return 0
+  return Number(existingFinalWeight)
+}
+
+// True when an un-discard lands in a weighed stage AND the item has no preserved
+// final_weight to replay (e.g. it was discarded before reaching "ready", so no
+// deduction ever happened). The caller must supply a fresh `final_weight` —
+// it's treated like a regular forward cross of "ready".
+export function requiresFreshWeightOnUndiscard(
+  toStage: ItemStage,
+  section: ItemSection,
+  existingFinalWeight: number | null,
+): boolean {
+  if (section !== "Studio") return false
+  if (existingFinalWeight != null) return false
+  if (toStage === "discarded") return false
+  const toRank = STAGE_ORDER[toStage as Exclude<ItemStage, "discarded">]
+  return toRank >= STAGE_ORDER["ready"]
+}
+
 /**
- * Updates an item. Three flows depending on the requested change:
+ * Updates an item. Five flows depending on the requested change:
  *
  *  1. Forward to (or past) a weigh-in / glaze stage (Studio only):
  *       - Crossing "glaze fired" requires glaze_type    (no weight deduction)
@@ -72,10 +122,22 @@ export function isStageBackward(from: ItemStage, to: ItemStage): boolean {
  *     A single update can cross both thresholds at once (e.g. waiting glaze → ready);
  *     final_weight deducts in the same transaction as the item update.
  *
- *  2. Backward rewind (Studio only, admin-gated at handler level):
+ *  2. Going TO "discarded" (Studio only): if the item already had final_weight
+ *     deducted (i.e. it was at/past "ready"), refund it to the subscription but
+ *     KEEP the weight on the item row so un-discarding can replay it.
+ *
+ *  3. Coming OUT of "discarded" (Studio only, admin-gated at handler level):
+ *       - Back into a weighed stage with a preserved final_weight → re-deduct
+ *       - Back into a weighed stage with NO preserved weight (item was discarded
+ *         before reaching "ready") → require fresh final_weight from the caller,
+ *         deduct it like a forward cross
+ *       - Back into a pre-weighed stage with a preserved final_weight → just clear
+ *         the column (refund already happened when going to discarded)
+ *
+ *  4. Backward rewind (Studio only, admin-gated at handler level):
  *       - If rewinding past "ready", refund final_weight to subscription + null on item
  *
- *  3. Standard update with no weight implications (PC items always land here).
+ *  5. Standard update with no weight implications (PC items always land here).
  */
 export const updateItem = async (id: number, data: UpdateItemDto): Promise<ItemJoined | null> => {
   const fields = Object.keys(data) as (keyof UpdateItemDto)[]
@@ -133,10 +195,64 @@ export const updateItem = async (id: number, data: UpdateItemDto): Promise<ItemJ
     }
   }
 
+  // ── Discard transitions (Studio only) ──
+  // Going TO "discarded" from at/past "ready": refund the deducted weight to
+  // the subscription but KEEP final_weight on the item so we can replay the
+  // deduction if the admin un-discards it later.
+  const goingToDiscarded = stageChange && data.stage === "discarded"
+  const discardRefund = goingToDiscarded
+    ? discardRefundAmount(existing.stage, existing.section as ItemSection, existing.final_weight)
+    : 0
+
+  // Coming OUT of "discarded" back into a weighed stage: re-deduct the preserved
+  // weight from the subscription (the refund earlier needs to be reversed).
+  const goingFromDiscarded = stageChange && existing.stage === "discarded" && data.stage && data.stage !== "discarded"
+  const undiscardRededuct = goingFromDiscarded
+    ? undiscardRedeductAmount(data.stage as ItemStage, existing.section as ItemSection, existing.final_weight)
+    : 0
+
+  // Coming out of "discarded" into a pre-weighed stage: no subscription change,
+  // but the saved final_weight no longer matches the new stage, so we clear it.
+  const undiscardClearWeight = !!goingFromDiscarded
+    && isStudio
+    && existing.final_weight != null
+    && undiscardRededuct === 0
+
+  // Un-discarding to a weighed stage with NO preserved weight (e.g. item was
+  // discarded at "drying" and is now being moved to "ready"). The original
+  // deduction never happened, so we treat this like a fresh forward cross:
+  // a final_weight must be provided and is deducted on update.
+  const undiscardNeedsFreshWeight = !!goingFromDiscarded
+    && requiresFreshWeightOnUndiscard(data.stage as ItemStage, existing.section as ItemSection, existing.final_weight)
+
+  if (undiscardNeedsFreshWeight && !data.final_weight) {
+    throw Object.assign(
+      new Error("final_weight is required when un-discarding to 'ready' or beyond — no weight was previously recorded"),
+      { statusCode: 400 },
+    )
+  }
+
   // ── Pick execution path ──
   // Forward weight stage → transactional deduction
   if (needsFinalWeight && data.final_weight) {
     return updateItemWithWeightDeduction(id, data, data.final_weight)
+  }
+  // Discarding an item with deducted weight → refund + keep the weight on the item
+  if (discardRefund > 0) {
+    return updateItemWithWeightRefund(id, data, discardRefund, existing.user_package_id, { clearItemWeight: false })
+  }
+  // Un-discarding into a weighed stage with no preserved weight → caller supplied
+  // a fresh final_weight; deduct it like a regular forward cross of "ready".
+  if (undiscardNeedsFreshWeight && data.final_weight) {
+    return updateItemWithWeightDeduction(id, data, data.final_weight)
+  }
+  // Un-discarding back into a weighed stage → re-deduct the preserved weight
+  if (undiscardRededuct > 0) {
+    return updateItemWithWeightDeduction(id, data, undiscardRededuct)
+  }
+  // Un-discarding to a pre-weighed stage → just clear the saved weight (refund already happened)
+  if (undiscardClearWeight) {
+    return updateItemAndClearFinalWeight(id, data)
   }
   // Backward rewind with refund obligation → transactional refund + clear item weight
   if (refundFinal > 0) {
@@ -147,6 +263,30 @@ export const updateItem = async (id: number, data: UpdateItemDto): Promise<ItemJ
   const setClauses = fields.map((key, i) => `${key} = $${i + 2}`)
   setClauses.push("updated_at = NOW()")
   const values = fields.map((key) => data[key] ?? null)
+
+  const rows = await executeQuery(
+    `UPDATE items SET ${setClauses.join(", ")} WHERE id = $1 RETURNING id`,
+    [id, ...values],
+  )
+  if (rows.length === 0) return null
+  return getItemById(id)
+}
+
+/**
+ * Standard item update + explicit final_weight = NULL. Used for un-discarding
+ * back to a pre-"ready" stage where the saved weight no longer applies but no
+ * subscription deduction is owed (the original refund already happened when
+ * the item was discarded).
+ */
+async function updateItemAndClearFinalWeight(
+  id: number,
+  data: UpdateItemDto,
+): Promise<ItemJoined | null> {
+  const merged: Record<string, unknown> = { ...data, final_weight: null }
+  const fields = Object.keys(merged)
+  const setClauses = fields.map((key, i) => `${key} = $${i + 2}`)
+  setClauses.push("updated_at = NOW()")
+  const values = fields.map((key) => merged[key] ?? null)
 
   const rows = await executeQuery(
     `UPDATE items SET ${setClauses.join(", ")} WHERE id = $1 RETURNING id`,
@@ -228,8 +368,11 @@ async function updateItemWithWeightDeduction(
 }
 
 /**
- * Transactional rewind — refunds the previously-deducted final_weight to the
- * subscription and nulls the column on the item.
+ * Transactional refund — credits a previously-deducted final_weight back to
+ * the linked subscription. Default behaviour also nulls the column on the
+ * item (used by the standard rewind path); set `clearItemWeight: false` when
+ * the column must be preserved so the deduction can be replayed later — that's
+ * what the discard flow needs, since un-discarding re-deducts the same weight.
  *
  * Studio items only (PC items have no subscription / weight tracking).
  */
@@ -238,15 +381,20 @@ async function updateItemWithWeightRefund(
   data: UpdateItemDto,
   refundFinal: number,
   userPackageId: number | null,
+  options: { clearItemWeight?: boolean } = {},
 ): Promise<ItemJoined | null> {
+  const clearItemWeight = options.clearItemWeight ?? true
   const client = await pool.connect()
 
   try {
     await client.query("BEGIN")
 
-    // Merge the requested data with a null-out of final_weight so the item is
-    // consistent with the new stage after the rewind.
-    const merged: Record<string, unknown> = { ...data, final_weight: null }
+    // Merge the requested data with a null-out of final_weight when the caller
+    // wants the column cleared (standard rewind). For discard refunds we keep
+    // it so undiscarding can replay the deduction.
+    const merged: Record<string, unknown> = clearItemWeight
+      ? { ...data, final_weight: null }
+      : { ...data }
 
     const fields = Object.keys(merged)
     const setClauses = fields.map((key, i) => `${key} = $${i + 2}`)
@@ -280,7 +428,58 @@ async function updateItemWithWeightRefund(
   }
 }
 
+/**
+ * Deletes an item. If the item still has weight deducted against a subscription
+ * (Studio item past "ready" with a recorded final_weight, NOT in "discarded"
+ * state since that already triggered a refund), the deduction is reversed in
+ * the same transaction so the subscription's remaining_weight is made whole.
+ *
+ * No-refund cases:
+ *  - PC items (no subscription / no weight tracking)
+ *  - final_weight IS NULL (nothing was deducted)
+ *  - stage === "discarded" (the refund already happened when discarding)
+ *  - user_package_id IS NULL (legacy / detached item)
+ */
 export const deleteItem = async (id: number): Promise<boolean> => {
-  const rows = await executeQuery("DELETE FROM items WHERE id = $1 RETURNING id", [id])
-  return rows.length > 0
+  const item = await getItemById(id)
+  if (!item) return false
+
+  const shouldRefund =
+    item.section === "Studio"
+    && item.stage !== "discarded"
+    && item.final_weight != null
+    && item.user_package_id != null
+
+  if (!shouldRefund) {
+    const rows = await executeQuery("DELETE FROM items WHERE id = $1 RETURNING id", [id])
+    return rows.length > 0
+  }
+
+  // Transactional refund + delete — lock the subscription row first so a concurrent
+  // deduction can't race us into negative-ish numbers.
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+
+    await client.query(
+      "SELECT id FROM user_packages WHERE id = $1 FOR UPDATE",
+      [item.user_package_id],
+    )
+    await client.query(
+      "UPDATE user_packages SET remaining_weight = remaining_weight + $1 WHERE id = $2",
+      [Number(item.final_weight), item.user_package_id],
+    )
+    const result = await client.query(
+      "DELETE FROM items WHERE id = $1 RETURNING id",
+      [id],
+    )
+
+    await client.query("COMMIT")
+    return result.rows.length > 0
+  } catch (err) {
+    await client.query("ROLLBACK")
+    throw err
+  } finally {
+    client.release()
+  }
 }
