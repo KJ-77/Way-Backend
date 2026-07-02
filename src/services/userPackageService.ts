@@ -4,17 +4,22 @@ import type {
   CreateUserPackageDto, UpdateUserPackageDto,
 } from "../lib/types"
 
-// Shared JOIN query — pulls user name + package catalog details alongside the subscription row
+// Shared JOIN query — pulls user name + package catalog details alongside the subscription row.
+// class_type_id / class_type_name come from the packages → class_types join and are used
+// by the booking flow to answer "which slots is this subscription eligible for."
 const BASE_SELECT = `
   SELECT
     up.id, up.user_id, up.package_id, up.purchase_date,
     up.remaining_sessions, up.remaining_weight, up.expiry_date, up.notes,
     u.full_name  AS user_name,
     p.package_type AS package_name,
+    p.class_type_id,
+    ct.name AS class_type_name,
     p.sessions_included, p.weight_included, p.price
   FROM user_packages up
-  JOIN users u    ON up.user_id    = u.id
-  JOIN packages p ON up.package_id = p.id
+  JOIN users u        ON up.user_id      = u.id
+  JOIN packages p     ON up.package_id   = p.id
+  JOIN class_types ct ON p.class_type_id = ct.id
 `
 
 export const getAllUserPackages = async (): Promise<UserPackageJoined[]> =>

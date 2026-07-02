@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
 import {
   CreateScheduleSlotSchema,
   UpdateScheduleSlotSchema,
@@ -13,7 +13,8 @@ import * as scheduleService from "../../services/scheduleService"
 import * as sessionService from "../../services/sessionService"
 
 // Only admins + studio managers can mutate the schedule (template or overrides).
-// Reads are public — the customer-facing site at waybeirut.com calls them too.
+// Reads require ANY logged-in user — the customer-facing site at waybeirut.com
+// now gates the schedule behind login (previously public).
 const SCHEDULE_WRITE_ROLES = ["admin", "studio-manager"] as const
 
 // Class-detail (per-occurrence sessions) is staff-only: it includes client
@@ -25,6 +26,9 @@ const CLASS_DETAIL_ROLES = ["admin", "studio-manager"] as const
 // week. Defaults to the current Beirut week when no param is given.
 export const getSchedule = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireAuth(getAuthContext(event))
+    if (denied) return denied
+
     const weekParam = getQueryParam(event, "week")
     let weekStart: string
 
@@ -46,6 +50,9 @@ export const getSchedule = async (event: APIGatewayProxyEventV2): Promise<APIGat
 
 export const getScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireAuth(getAuthContext(event))
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid slot ID" })
 

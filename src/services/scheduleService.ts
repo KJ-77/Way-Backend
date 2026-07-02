@@ -12,10 +12,14 @@ import type {
 // All schedule reads filter out soft-deleted slots by default. Use the
 // `*IncludingDeleted` variants for audit/admin lookups when you need to see
 // a slot that's been retired.
+// class_types is INNER JOIN because schedule.class_type_id is NOT NULL — every
+// slot belongs to a class. Adds class_type_name so the frontend can render the
+// class label without a second lookup.
 const BASE_SELECT = `
-  SELECT s.*, t.full_name AS tutor_name
+  SELECT s.*, t.full_name AS tutor_name, ct.name AS class_type_name
   FROM schedule s
   LEFT JOIN tutors t ON s.tutor_id = t.id
+  JOIN class_types ct ON s.class_type_id = ct.id
 `
 
 // ── Template-level reads ───────────────────────────────────────────────────
@@ -56,8 +60,9 @@ export const getSlotsForWeek = async (weekStart: string): Promise<ScheduleSlotFo
     `
     SELECT
       s.id, s.day_of_week, s.start_time, s.end_time, s.capacity,
-      s.tutor_id, s.package, s.deleted_at, s.created_at, s.updated_at,
+      s.tutor_id, s.class_type_id, s.deleted_at, s.created_at, s.updated_at,
       t.full_name AS tutor_name,
+      ct.name AS class_type_name,
       $1::date AS week_start,
       COALESCE(o.is_fully_booked, false) AS is_fully_booked,
       COALESCE(o.is_cancelled, false)    AS is_cancelled,
@@ -72,6 +77,7 @@ export const getSlotsForWeek = async (weekStart: string): Promise<ScheduleSlotFo
       ) AS attending_count
     FROM schedule s
     LEFT JOIN tutors t ON s.tutor_id = t.id
+    JOIN class_types ct ON s.class_type_id = ct.id
     LEFT JOIN schedule_overrides o
       ON o.slot_id = s.id AND o.week_start = $1::date
     WHERE s.deleted_at IS NULL
@@ -96,8 +102,9 @@ export const getSlotForDate = async (
     `
     SELECT
       s.id, s.day_of_week, s.start_time, s.end_time, s.capacity,
-      s.tutor_id, s.package, s.deleted_at, s.created_at, s.updated_at,
+      s.tutor_id, s.class_type_id, s.deleted_at, s.created_at, s.updated_at,
       t.full_name AS tutor_name,
+      ct.name AS class_type_name,
       $1::date AS week_start,
       COALESCE(o.is_fully_booked, false) AS is_fully_booked,
       COALESCE(o.is_cancelled, false)    AS is_cancelled,
@@ -112,6 +119,7 @@ export const getSlotForDate = async (
       ) AS attending_count
     FROM schedule s
     LEFT JOIN tutors t ON s.tutor_id = t.id
+    JOIN class_types ct ON s.class_type_id = ct.id
     LEFT JOIN schedule_overrides o
       ON o.slot_id = s.id AND o.week_start = $1::date
     WHERE s.id = $2
@@ -125,14 +133,14 @@ export const getSlotForDate = async (
 
 export const createSlot = async (data: CreateScheduleSlotDto): Promise<ScheduleSlotJoined> => {
   const rows = await executeQuery<{ id: number }>(
-    `INSERT INTO schedule (day_of_week, start_time, end_time, tutor_id, package, capacity)
+    `INSERT INTO schedule (day_of_week, start_time, end_time, tutor_id, class_type_id, capacity)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
     [
       data.day_of_week,
       data.start_time,
       data.end_time,
       data.tutor_id ?? null,
-      data.package ?? null,
+      data.class_type_id,
       data.capacity ?? null,
     ]
   )

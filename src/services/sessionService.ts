@@ -1,10 +1,12 @@
 import { pool, executeQuery } from "../lib/db"
 import type { SessionJoined, CreateSessionDto, UpdateSessionDto, Attendance } from "../lib/types"
+import type { AuthContext } from "../lib/auth"
 import { getBeirutWeekStart, getBeirutToday, getBeirutDayOfWeek } from "../lib/time"
 
 // Shared JOIN. sessions only carries user_package_id — user/package are
 // derived by walking the FK chain through user_packages. The schedule join is
-// LEFT because legacy rows (pre-migration-003) have NULL schedule_slot_id.
+// LEFT because legacy rows (pre-migration-003) have NULL schedule_slot_id;
+// the class_types join is LEFT for the same reason (it hangs off sch).
 const BASE_SELECT = `
   SELECT
     s.id, s.user_package_id, s.schedule_slot_id, s.class_date,
@@ -12,14 +14,15 @@ const BASE_SELECT = `
     up.user_id, up.package_id,
     u.full_name  AS user_name,
     p.package_type AS package_name,
-    sch.package    AS class_name,
+    ct.name        AS class_name,
     sch.start_time AS class_start_time,
     sch.end_time   AS class_end_time
   FROM sessions s
   JOIN user_packages up ON s.user_package_id = up.id
   JOIN users u          ON up.user_id        = u.id
   JOIN packages p       ON up.package_id     = p.id
-  LEFT JOIN schedule sch ON s.schedule_slot_id = sch.id
+  LEFT JOIN schedule sch  ON s.schedule_slot_id = sch.id
+  LEFT JOIN class_types ct ON sch.class_type_id  = ct.id
 `
 
 // Throws an Error with statusCode + code attached. Handler propagates both
@@ -80,13 +83,22 @@ export const getSessionsByClassOccurrence = async (
  * 1. Validates the class link (slot exists, not deleted, DOW matches class_date,
  *    week isn't cancelled — last check only applies when attendance is counted)
  * 2. Locks the requested subscription (user_package_id) + loads capacity info
- * 3. Validates it's not expired; if attendance is counted, also that it has
+ * 3. Enforces ownership (client callers only) and class-type match (all callers)
+ * 4. Validates it's not expired; if attendance is counted, also that it has
  *    remaining sessions
- * 4. Rejects "booked" attendance for past class_dates (no booking time-travel)
- * 5. Decrements remaining_sessions by 1 UNLESS attendance is "cancelled - no charge"
- * 6. Inserts the session row with the schedule_slot_id + class_date link
+ * 5. Rejects "booked" attendance for past class_dates (no booking time-travel)
+ * 6. Decrements remaining_sessions by 1 UNLESS attendance is "cancelled - no charge"
+ * 7. Inserts the session row with the schedule_slot_id + class_date link
+ *
+ * caller is the AuthContext of whoever's making the request. When it's a client
+ * (source_pool === "client"), we additionally require the subscription's owner
+ * to match the caller. The class-type-match check applies to ALL callers —
+ * you can never book a Hand Building slot against a Wheel Throwing sub.
  */
-export const createSession = async (data: CreateSessionDto): Promise<SessionJoined> => {
+export const createSession = async (
+  data: CreateSessionDto,
+  caller?: AuthContext | null,
+): Promise<SessionJoined> => {
   const client = await pool.connect()
   try {
     await client.query("BEGIN")
@@ -95,9 +107,10 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
 
     // ── Class-link validation ──
     // Lock the slot row so a concurrent soft-delete can't slip past us between
-    // the check and the insert. Reading deleted_at lets us reject retired slots.
+    // the check and the insert. Also pull class_type_id for the match check
+    // against the subscription's package.
     const slotResult = await client.query(
-      `SELECT id, day_of_week, deleted_at
+      `SELECT id, day_of_week, class_type_id, deleted_at
          FROM schedule
         WHERE id = $1
         FOR SHARE`,
@@ -107,7 +120,12 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
     if (slotResult.rows.length === 0) {
       businessError(404, "SLOT_NOT_FOUND", "The selected class no longer exists.")
     }
-    const slot = slotResult.rows[0] as { id: number; day_of_week: number; deleted_at: Date | null }
+    const slot = slotResult.rows[0] as {
+      id: number
+      day_of_week: number
+      class_type_id: number
+      deleted_at: Date | null
+    }
 
     if (slot.deleted_at) {
       businessError(409, "SLOT_DELETED", "The selected class has been removed from the schedule.")
@@ -149,9 +167,12 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
       }
     }
 
-    // ── Subscription validation (existing logic, untouched) ──
+    // ── Subscription validation ──
+    // Also pull up.user_id (for ownership check when caller is a client) and
+    // p.class_type_id (for the class-type match check against the slot).
     const subResult = await client.query(
-      `SELECT up.id, up.remaining_sessions,
+      `SELECT up.id, up.user_id, up.remaining_sessions,
+              p.class_type_id AS package_class_type_id,
               p.sessions_included,
               (up.expiry_date < CURRENT_DATE) AS is_expired
          FROM user_packages up
@@ -164,7 +185,37 @@ export const createSession = async (data: CreateSessionDto): Promise<SessionJoin
     if (subResult.rows.length === 0) {
       throw Object.assign(new Error("Subscription not found"), { statusCode: 404 })
     }
-    const sub = subResult.rows[0]
+    const sub = subResult.rows[0] as {
+      id: number
+      user_id: string
+      remaining_sessions: number
+      package_class_type_id: number
+      sessions_included: number
+      is_expired: boolean
+    }
+
+    // ── Ownership check (client callers only) ──
+    // Clients can only book against their own subscriptions. Admin/studio-manager
+    // can create sessions for any client (necessary for backfill + manual entry).
+    if (caller?.source_pool === "client" && sub.user_id !== caller.sub) {
+      businessError(
+        403,
+        "SUB_OWNERSHIP",
+        "You can only book classes using your own subscriptions.",
+      )
+    }
+
+    // ── Class-type match (all callers) ──
+    // The subscription's package must be for the same class as the slot.
+    // Enforced universally: a Hand Building sub can only book Hand Building
+    // slots. An admin trying to cross-link should reassign the sub first.
+    if (sub.package_class_type_id !== slot.class_type_id) {
+      businessError(
+        403,
+        "CLASS_TYPE_MISMATCH",
+        "This subscription doesn't cover this class. Choose a slot for the same class as your subscription.",
+      )
+    }
 
     if (sub.is_expired) {
       throw Object.assign(new Error("Subscription has expired"), { statusCode: 400 })

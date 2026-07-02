@@ -40,3 +40,22 @@ export const requireRole = (
   }
   return null // authorized
 }
+
+// Any-logged-in-user gate. Returns a 401 response object when the caller
+// isn't authenticated, or null when they are. Mirror of requireRole's shape:
+// caller checks the return, early-returns if non-null, otherwise proceeds.
+//
+// Use this on handlers where "just needs to be logged in" is the WHOLE check
+// and the auth context isn't needed afterward (e.g. gated read endpoints that
+// don't scope results per-user). For handlers that DO need auth after the
+// check (auth.sub / auth.source_pool for ownership filtering), keep the
+// inline `if (!auth) return 401` — TS won't narrow the local `auth` variable
+// through this helper's return value.
+export const requireAuth = (
+  auth: AuthContext | null,
+): APIGatewayProxyResultV2 | null => {
+  if (!auth) {
+    return createResponse(401, { error: "Unauthorized" })
+  }
+  return null // authenticated
+}

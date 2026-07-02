@@ -335,8 +335,9 @@ functions:
             name: customJwtAuthorizer
 
   # ── Packages ──
-  # GET endpoints are public — clients browse the catalog before subscribing.
-  # Mutations are gated to admin / studio-manager via requireRole() inside the handler.
+  # All endpoints require a logged-in user (any role). The catalog is gated
+  # per the client's request — anonymous browsing is not offered.
+  # Mutations additionally require admin / studio-manager via requireRole().
   getPackages:
     handler: src/functions/packages/handler.getPackages
     vpc:
@@ -350,7 +351,8 @@ functions:
       - httpApi:
           path: /packages
           method: GET
-          # no authorizer — public endpoint
+          authorizer:
+            name: customJwtAuthorizer
 
   getPackage:
     handler: src/functions/packages/handler.getPackage
@@ -365,7 +367,8 @@ functions:
       - httpApi:
           path: /packages/{id}
           method: GET
-          # no authorizer — public endpoint
+          authorizer:
+            name: customJwtAuthorizer
 
   createPackage:
     handler: src/functions/packages/handler.createPackage
@@ -578,8 +581,9 @@ functions:
             name: customJwtAuthorizer
 
   # ── Schedule ──
-  # GET endpoints are public — anyone (logged in or not) can view Way's weekly schedule.
-  # Mutations are gated to admin / studio-manager via requireRole() inside the handler.
+  # All endpoints require a logged-in user (any role). Anonymous browsing of
+  # the weekly schedule is not offered — clients must sign in first.
+  # Mutations additionally require admin / studio-manager via requireRole().
   getSchedule:
     handler: src/functions/schedule/handler.getSchedule
     vpc:
@@ -593,7 +597,8 @@ functions:
       - httpApi:
           path: /schedule
           method: GET
-          # no authorizer — public endpoint
+          authorizer:
+            name: customJwtAuthorizer
 
   getScheduleSlot:
     handler: src/functions/schedule/handler.getScheduleSlot
@@ -608,7 +613,8 @@ functions:
       - httpApi:
           path: /schedule/{id}
           method: GET
-          # no authorizer — public endpoint
+          authorizer:
+            name: customJwtAuthorizer
 
   createScheduleSlot:
     handler: src/functions/schedule/handler.createScheduleSlot
@@ -789,6 +795,89 @@ functions:
     events:
       - httpApi:
           path: /items/{id}
+          method: DELETE
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Class Types (admin-managed lookup for packages.class_type_id + schedule.class_type_id) ──
+  # Reads: any logged-in user (client site + admin panel both consume them).
+  # Writes: admin + studio-manager via requireRole() inside the handler.
+  getClassTypes:
+    handler: src/functions/class-types/handler.getClassTypes
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /class-types
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  getClassType:
+    handler: src/functions/class-types/handler.getClassType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /class-types/{id}
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  createClassType:
+    handler: src/functions/class-types/handler.createClassType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /class-types
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  updateClassType:
+    handler: src/functions/class-types/handler.updateClassType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /class-types/{id}
+          method: PUT
+          authorizer:
+            name: customJwtAuthorizer
+
+  deleteClassType:
+    handler: src/functions/class-types/handler.deleteClassType
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /class-types/{id}
           method: DELETE
           authorizer:
             name: customJwtAuthorizer

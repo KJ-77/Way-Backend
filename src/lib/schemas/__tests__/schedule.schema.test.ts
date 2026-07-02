@@ -23,11 +23,12 @@ import {
 // ── CreateScheduleSlotSchema ────────────────────────────────────────────────
 
 describe("CreateScheduleSlotSchema", () => {
-  // Minimum viable slot — three required fields, optional tutor/package
+  // Minimum viable slot — day/time/class_type_id required, optional tutor/capacity
   const validInput = {
     day_of_week: 0,
     start_time: "10:00",
     end_time: "12:00",
+    class_type_id: 1,
   }
 
   it("accepts a slot with only required fields", () => {
@@ -44,20 +45,18 @@ describe("CreateScheduleSlotSchema", () => {
     expect(result.success).toBe(true)
   })
 
-  it("accepts optional tutor_id and package", () => {
+  it("accepts optional tutor_id", () => {
     const result = CreateScheduleSlotSchema.safeParse({
       ...validInput,
       tutor_id: 5,
-      package: "wheel throwing explorer",
     })
     expect(result.success).toBe(true)
   })
 
-  it("accepts null tutor_id and null package", () => {
+  it("accepts null tutor_id", () => {
     const result = CreateScheduleSlotSchema.safeParse({
       ...validInput,
       tutor_id: null,
-      package: null,
     })
     expect(result.success).toBe(true)
   })
@@ -82,8 +81,14 @@ describe("CreateScheduleSlotSchema", () => {
     expect(result.success).toBe(false)
   })
 
-  it("rejects empty package string", () => {
-    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, package: "" })
+  it("rejects missing class_type_id", () => {
+    const { class_type_id: _drop, ...withoutClassType } = validInput
+    const result = CreateScheduleSlotSchema.safeParse(withoutClassType)
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects non-positive class_type_id", () => {
+    const result = CreateScheduleSlotSchema.safeParse({ ...validInput, class_type_id: 0 })
     expect(result.success).toBe(false)
   })
 

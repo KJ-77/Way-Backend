@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { z } from "zod"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
 import * as clayTypeService from "../../services/clayTypeService"
 
 // Reads are open to any authenticated user — the items create/edit dialog needs the list.
@@ -18,8 +18,8 @@ const RenameClayTypeSchema = z.object({
 
 export const getClayTypes = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const auth = getAuthContext(event)
-    if (!auth) return createResponse(401, { error: "Unauthorized" })
+    const denied = requireAuth(getAuthContext(event))
+    if (denied) return denied
     const types = await clayTypeService.getAllClayTypes()
     return createResponse(200, types)
   } catch (err) {

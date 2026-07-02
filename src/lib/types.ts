@@ -29,13 +29,37 @@ export interface User {
   updated_at: string
 }
 
-// Product catalog — fixed package definitions offered by the studio
+// Abstract class concept. Both packages and schedule slots FK into this — a
+// class ("Hand Building") can have many packages (4-session, 8-session tiers)
+// and many scheduled occurrences. Enables the booking eligibility rule:
+// user can book slot S iff they have an active sub whose package.class_type_id
+// matches S.class_type_id.
+export interface ClassType {
+  id: number
+  name: string
+  description: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+// Product catalog — fixed package definitions offered by the studio.
+// package_type is the SKU-like display label ("Hand Building - 4 Sessions");
+// class_type_id is the FK identifying which class this package unlocks. Two
+// packages with the same class_type_id are alternative purchase options for
+// the same underlying class.
 export interface Package {
   id: number
   package_type: string
+  class_type_id: number
   sessions_included: number
   weight_included: number
   price: number
+}
+
+// Package + joined class_type name — the shape read endpoints return.
+export interface PackageJoined extends Package {
+  class_type_name: string
 }
 
 // DB columns on the sessions table. user_id/package_id are NOT columns here —
@@ -65,7 +89,7 @@ export interface SessionJoined extends Session {
   package_id: number                 // joined via user_packages.package_id
   user_name: string                  // joined via users.full_name
   package_name: string               // joined via packages.package_type
-  class_name: string | null          // schedule.package (e.g. "wheel throwing explorer"); null for legacy rows
+  class_name: string | null          // joined via schedule → class_types.name; null for legacy rows
   class_start_time: string | null    // schedule.start_time "HH:MM:SS"
   class_end_time: string | null      // schedule.end_time "HH:MM:SS"
 }
@@ -88,6 +112,7 @@ import type { CreateUserSchema, UpdateUserSchema } from "./schemas/user.schema"
 export type CreateUserDto = z.infer<typeof CreateUserSchema>
 export type UpdateUserDto = z.infer<typeof UpdateUserSchema>
 
+// class_type_id required on create (packages must belong to a class).
 export type CreatePackageDto = Omit<Package, "id">
 export type UpdatePackageDto = Partial<CreatePackageDto>
 
@@ -110,10 +135,14 @@ export interface UserPackageRow {
   notes: string | null
 }
 
-// Shape returned by JOIN queries (includes user name + package details)
+// Shape returned by JOIN queries (includes user name + package details).
+// class_type_id / class_type_name are surfaced for the client booking flow's
+// eligibility check ("does this sub cover this slot's class?").
 export interface UserPackageJoined extends UserPackageRow {
   user_name: string
   package_name: string
+  class_type_id: number
+  class_type_name: string
   sessions_included: number
   weight_included: number
   price: number
@@ -150,16 +179,17 @@ export interface ScheduleSlot {
   start_time: string // "HH:MM:SS"
   end_time: string
   tutor_id: number | null
-  package: string | null // class type enum — also serves as the slot's display name
+  class_type_id: number // FK → class_types.id; the class this slot is an instance of
   capacity: number | null // max headcount admin set for this slot (informational, not enforced)
   deleted_at: string | null // soft-delete marker; NULL = active
   created_at: string
   updated_at: string
 }
 
-// Joined with tutor name for API response
+// Joined with tutor name + class_type name for API response
 export interface ScheduleSlotJoined extends ScheduleSlot {
   tutor_name: string | null
+  class_type_name: string
 }
 
 // What the calendar API returns — slot + the override (if any) for the requested
@@ -187,11 +217,21 @@ export interface CreateScheduleSlotDto {
   start_time: string
   end_time: string
   tutor_id?: number | null
-  package?: string | null
+  class_type_id: number
   capacity?: number | null
 }
 
 export type UpdateScheduleSlotDto = Partial<CreateScheduleSlotDto>
+
+// ── Class Types ──
+
+export type CreateClassTypeDto = {
+  name: string
+  description?: string | null
+  is_active?: boolean
+}
+
+export type UpdateClassTypeDto = Partial<CreateClassTypeDto>
 
 // ── Schedule Overrides (per-week exceptions to the template) ──
 

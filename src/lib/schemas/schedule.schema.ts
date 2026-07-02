@@ -6,12 +6,14 @@ import { z } from "zod"
 // capacity is the admin-set headcount for the class — informational only (we
 // don't auto-flip "fully booked" when reached) but used to show progress like
 // "4/8 attending" on the schedule grid.
+// class_type_id is REQUIRED — every slot belongs to a class (FK to class_types
+// with ON DELETE RESTRICT). Display name comes from the joined class_types.name.
 export const CreateScheduleSlotSchema = z.object({
   day_of_week: z.number().int().min(0).max(6),
   start_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/), // HH:MM or HH:MM:SS
   end_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
   tutor_id: z.number().int().positive().nullable().optional(),
-  package: z.string().min(1).nullable().optional(),       // class type enum — also the slot's display name
+  class_type_id: z.number().int().positive("class_type_id is required"),
   capacity: z.number().int().positive("capacity must be a positive integer").nullable().optional(),
 })
 

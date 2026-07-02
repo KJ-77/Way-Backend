@@ -21,9 +21,17 @@ function respondToServiceError(err: unknown): APIGatewayProxyResultV2 | null {
 }
 
 // Admin/studio-manager can create + update sessions; admin alone can delete.
-// Clients can READ their own sessions only — never mutate.
+// Clients can:
+//   • READ their own sessions
+//   • CREATE sessions for themselves with attendance='booked' — the client-
+//     side booking flow. Ownership + class-type-match are enforced in the
+//     service layer (see sessionService.createSession).
 const SESSION_WRITE_ROLES = ["admin", "studio-manager"]
 const SESSION_DELETE_ROLES = ["admin"]
+
+// Only "booked" is allowed when a client creates a session — they can't
+// backfill attendance, cancel someone else's booking, etc.
+const CLIENT_ALLOWED_ATTENDANCE = "booked"
 
 export const getSessions = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
@@ -70,8 +78,22 @@ export const getSession = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
 export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SESSION_WRITE_ROLES)
-    if (denied) return denied
+    const auth = getAuthContext(event)
+    if (!auth) return createResponse(401, { error: "Unauthorized" })
+
+    // Split gate: admin/studio-manager can create any session; clients can only
+    // create their own bookings with attendance='booked'. Anything else from a
+    // client caller (foreign attendance value, foreign role we don't know) is
+    // rejected here — the service layer *also* verifies ownership + class match
+    // as defense-in-depth.
+    if (auth.source_pool === "client") {
+      // Client callers: force attendance to 'booked' regardless of body.
+      // This prevents a client from backfilling 'attended' or manipulating
+      // someone else's cancellation state.
+    } else {
+      const denied = requireRole(auth, ...SESSION_WRITE_ROLES)
+      if (denied) return denied
+    }
 
     const raw = parseBody(event.body)
     const result = CreateSessionSchema.safeParse(raw)
@@ -79,7 +101,17 @@ export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIG
       return createResponse(400, { error: "Validation failed", issues: result.error.issues })
     }
 
-    const session = await sessionService.createSession(result.data)
+    // For clients, override attendance server-side. Also short-circuits an
+    // early rejection if they explicitly asked for something else.
+    if (auth.source_pool === "client" && result.data.attendance !== CLIENT_ALLOWED_ATTENDANCE) {
+      return createResponse(403, {
+        error: "Forbidden",
+        code: "CLIENT_ATTENDANCE_FORBIDDEN",
+        message: "Client bookings must use attendance='booked'.",
+      })
+    }
+
+    const session = await sessionService.createSession(result.data, auth)
     return createResponse(201, session)
   } catch (err) {
     const mapped = respondToServiceError(err)

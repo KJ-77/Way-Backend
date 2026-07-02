@@ -1,15 +1,19 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
 import type { CreatePackageDto, UpdatePackageDto } from "../../lib/types"
 import * as packageService from "../../services/packageService"
 
-// Only admins + studio managers can create/update/delete packages. Reads are public
-// so clients can browse the catalog and (eventually) subscribe.
+// All endpoints require a logged-in user (any role). Anonymous catalog browse
+// is not offered — clients must sign in first. Mutations additionally require
+// admin/studio-manager via requireRole.
 const PACKAGE_WRITE_ROLES = ["admin", "studio-manager"] as const
 
-export const getPackages = async (): Promise<APIGatewayProxyResultV2> => {
+export const getPackages = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireAuth(getAuthContext(event))
+    if (denied) return denied
+
     const packages = await packageService.getAllPackages()
     return createResponse(200, packages)
   } catch (err) {
@@ -19,6 +23,9 @@ export const getPackages = async (): Promise<APIGatewayProxyResultV2> => {
 
 export const getPackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireAuth(getAuthContext(event))
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid package ID" })
 
@@ -38,6 +45,9 @@ export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIG
     const data = parseBody<CreatePackageDto>(event.body)
     if (!data.package_type) {
       return createResponse(400, { error: "package_type is required" })
+    }
+    if (!data.class_type_id || typeof data.class_type_id !== "number") {
+      return createResponse(400, { error: "class_type_id is required" })
     }
 
     const pkg = await packageService.createPackage(data)
