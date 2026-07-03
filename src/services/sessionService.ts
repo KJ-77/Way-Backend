@@ -217,6 +217,41 @@ export const createSession = async (
       )
     }
 
+    // ── Duplicate-booking guard ──
+    // A user can't hold more than one active seat for the same class occurrence,
+    // even across different subscriptions. Only counted-and-still-active states
+    // block a re-book — "cancelled" and "cancelled - no charge" don't, so a
+    // user who cancels can rebook against a different sub.
+    //
+    // The advisory lock (keyed on user + slot + date) closes the race window
+    // between the SELECT and the INSERT for concurrent requests targeting the
+    // same occurrence. pg_advisory_xact_lock releases at COMMIT/ROLLBACK so
+    // there's no manual cleanup, and hashtext() folds the tuple into the int4
+    // keyspace pg_advisory_lock expects.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      [`booking:${sub.user_id}:${data.schedule_slot_id}:${data.class_date}`],
+    )
+
+    const existingBookingResult = await client.query(
+      `SELECT s.id
+         FROM sessions s
+         JOIN user_packages up ON s.user_package_id = up.id
+        WHERE up.user_id = $1
+          AND s.schedule_slot_id = $2
+          AND s.class_date = $3::date
+          AND s.attendance IN ('booked', 'attended')
+        LIMIT 1`,
+      [sub.user_id, data.schedule_slot_id, data.class_date],
+    )
+    if (existingBookingResult.rows.length > 0) {
+      businessError(
+        409,
+        "DUPLICATE_BOOKING",
+        "This client already has a booking for this class.",
+      )
+    }
+
     if (sub.is_expired) {
       throw Object.assign(new Error("Subscription has expired"), { statusCode: 400 })
     }

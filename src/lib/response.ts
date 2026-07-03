@@ -37,11 +37,12 @@ export const getQueryParam = (event: APIGatewayProxyEventV2, key: string): strin
 //   SERVER_ERROR                              — 500 unhandled fallthrough
 //
 // Session class-link codes (thrown by sessionService.createSession):
-//   SLOT_NOT_FOUND   — 404 referenced schedule slot doesn't exist
-//   SLOT_DELETED     — 409 slot exists but has been soft-deleted (deleted_at IS NOT NULL)
-//   DOW_MISMATCH     — 400 class_date's day-of-week doesn't match the slot's day_of_week
-//   CLASS_CANCELLED  — 409 class is cancelled for that week (only blocks booked/attended)
-//   PAST_BOOKING     — 400 attempting to "book" a class on a past date
+//   SLOT_NOT_FOUND     — 404 referenced schedule slot doesn't exist
+//   SLOT_DELETED       — 409 slot exists but has been soft-deleted (deleted_at IS NOT NULL)
+//   DOW_MISMATCH       — 400 class_date's day-of-week doesn't match the slot's day_of_week
+//   CLASS_CANCELLED    — 409 class is cancelled for that week (only blocks booked/attended)
+//   PAST_BOOKING       — 400 attempting to "book" a class on a past date
+//   DUPLICATE_BOOKING  — 409 user already has a counted seat for this (slot, date) via any sub
 //
 // Accounts self-action guards (in accounts/handler.ts):
 //   SELF_ROLE_CHANGE — 403 admin tried to change their own role (lockout risk)
