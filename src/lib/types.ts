@@ -25,6 +25,10 @@ export interface User {
   // Soft-delete flag — false means the client has been "deleted" from the UI but their
   // history (sessions, items, subscriptions) is preserved. Their Cognito login is disabled.
   is_active: boolean
+  // Excludes the client from marketing broadcasts (compliance requirement for
+  // WhatsApp). Utility messages — "your piece is ready" — still send.
+  marketing_opt_out: boolean
+  marketing_opt_out_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -303,3 +307,158 @@ export interface Account {
 import type { CreateAccountSchema, UpdateAccountSchema } from "./schemas/account.schema"
 export type CreateAccountDto = z.infer<typeof CreateAccountSchema>
 export type UpdateAccountDto = z.infer<typeof UpdateAccountSchema>
+
+// ── Communications (see migration 004-communications.sql) ──
+//
+// Outbound messages are DRAFTED into a queue (status 'pending_approval') and
+// only sent once a staff member approves — nothing ever sends automatically.
+// Inbound client replies land in the same `messages` table so the inbox is a
+// single ordered read per conversation.
+
+export type MessageDirection = "outbound" | "inbound"
+export type MessageChannel = "whatsapp" | "sms"
+export type MessageStatus =
+  | "pending_approval"
+  | "queued"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "cancelled"
+export type MessageKind = "template" | "freeform"
+export type MessageTrigger = "client_created" | "item_stage" | "broadcast" | "manual" | "inbound"
+export type TemplateCategory = "marketing" | "utility" | "authentication"
+export type TemplateStatus = "draft" | "pending" | "approved" | "rejected" | "disabled"
+export type BroadcastStatus = "draft" | "pending_approval" | "sending" | "sent" | "cancelled"
+
+// Local mirror of a provider-registered template. Meta is the source of truth
+// for `status` / `provider_template_id`; everything else is ours.
+export interface MessageTemplate {
+  id: number
+  name: string
+  language: string
+  category: TemplateCategory
+  // Body using Meta's positional placeholders: {{1}}, {{2}}, …
+  body: string
+  // Human labels for each placeholder, in order — e.g. ["client name", "stage"]
+  variable_labels: string[]
+  status: TemplateStatus
+  provider_template_id: string | null
+  // Compound trigger key: "client_created", "item_stage:ready", … NULL when the
+  // template is only used manually or for broadcasts. At most one ACTIVE
+  // template may claim a given trigger (partial unique index).
+  trigger_event: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+// One thread per (client, channel). Intentionally thin — activity/unread state
+// is derived from `messages`, never cached here.
+export interface Conversation {
+  id: number
+  user_id: string
+  channel: MessageChannel
+  // E.164 snapshot of where messages were actually addressed (audit fact).
+  phone: string
+  created_at: string
+  updated_at: string
+}
+
+// Conversation + the fields the inbox list derives on read.
+export interface ConversationJoined extends Conversation {
+  user_name: string
+  last_message_at: string | null
+  last_message_preview: string | null
+  // MAX(created_at) of inbound messages — the 24-hour free-form window opens
+  // from here. NULL means the client has never messaged us, so only templates
+  // are legal.
+  last_inbound_at: string | null
+  unread_count: number
+}
+
+export interface Message {
+  id: number
+  conversation_id: number
+  direction: MessageDirection
+  channel: MessageChannel
+  status: MessageStatus
+  kind: MessageKind
+  template_id: number | null
+  // The {{n}} values used for this specific message, e.g. { "1": "Sara" }
+  template_variables: Record<string, string> | null
+  // Fully-rendered text, snapshotted at enqueue time so template edits never
+  // rewrite history.
+  body: string
+  trigger: MessageTrigger
+  trigger_ref: string | null
+  broadcast_id: number | null
+  provider_message_id: string | null
+  error_code: string | null
+  error_message: string | null
+  // Send-attempt bookkeeping. status='queued' + last_attempt_at set +
+  // provider_message_id NULL means UNCONFIRMED: handed to the provider but the
+  // result was never recorded. Surfaced to a human; never auto-retried.
+  attempt_count: number
+  last_attempt_at: string | null
+  created_by: string | null
+  approved_by: string | null
+  approved_at: string | null
+  sent_at: string | null
+  read_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+// Shape the queue + inbox endpoints return.
+export interface MessageJoined extends Message {
+  user_id: string
+  user_name: string
+  phone: string
+  template_name: string | null
+}
+
+export interface Broadcast {
+  id: number
+  name: string
+  template_id: number
+  template_variables: Record<string, string>
+  channel: MessageChannel
+  // Snapshot of the audience filter used, e.g. { level: "Beginner" }
+  audience: Record<string, unknown>
+  status: BroadcastStatus
+  created_by: string | null
+  created_at: string
+  updated_at: string
+  sent_at: string | null
+}
+
+// Broadcast + derived per-status counts of its fanned-out messages.
+export interface BroadcastJoined extends Broadcast {
+  template_name: string
+  total_count: number
+  sent_count: number
+  failed_count: number
+  pending_count: number
+}
+
+// ── Communications DTOs ──
+
+// Staff-composed message. `template_id` + `variables` for a business-initiated
+// send; `body` alone for a free-form reply (only legal inside an open 24h
+// window — the service enforces this, not the type).
+export interface CreateMessageDto {
+  user_id: string
+  channel?: MessageChannel
+  template_id?: number
+  variables?: Record<string, string>
+  body?: string
+}
+
+export interface CreateBroadcastDto {
+  name: string
+  template_id: number
+  variables?: Record<string, string>
+  channel?: MessageChannel
+  audience?: Record<string, unknown>
+}

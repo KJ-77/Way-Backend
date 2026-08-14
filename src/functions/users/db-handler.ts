@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda"
 import { executeQuery } from "../../lib/db"
+import { encodeDbError } from "../../lib/dbError"
 import type { User } from "../../lib/types"
 
 // Payload shape for direct Lambda invocations from the Cognito-facing handlers
@@ -18,8 +19,17 @@ export const userDbOps = async (event: unknown): Promise<unknown> => {
     return { statusCode: 400, body: "Internal handler, not exposed via HTTP" }
   }
 
-  const payload = event as DbOpsPayload
+  try {
+    return await runDbOp(event as DbOpsPayload)
+  } catch (err) {
+    // Re-throw with pg metadata packed into the message. Lambda's error
+    // serialization would otherwise strip `code`/`constraint`/`detail` and the
+    // calling handler could only report a generic failure. See lib/dbError.ts.
+    throw encodeDbError(err)
+  }
+}
 
+const runDbOp = async (payload: DbOpsPayload): Promise<unknown> => {
   switch (payload.action) {
     case "getById": {
       const rows = await executeQuery<User>(
