@@ -81,6 +81,9 @@ export interface Session {
   class_date: string | null  // "YYYY-MM-DD" (no time component)
   session_nb: number
   attendance: Attendance
+  // Set when a class cancellation/deletion auto-refunded this session; holds the
+  // attendance to restore if the class is un-cancelled. null = not auto-refunded.
+  refunded_from_attendance: Attendance | null
   notes?: string
   created_at: string
 }

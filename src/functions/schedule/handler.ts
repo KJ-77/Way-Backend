@@ -101,6 +101,8 @@ export const updateScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
 }
 
 // Soft-delete — flips schedule.deleted_at. Override history is preserved.
+// Also refunds every client booked into a future occurrence; `refunded` is the
+// session count so the UI can confirm what happened to staff.
 export const deleteScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
@@ -109,9 +111,9 @@ export const deleteScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid slot ID" })
 
-    const deleted = await scheduleService.softDeleteSlot(id)
+    const { deleted, refunded } = await scheduleService.softDeleteSlot(id)
     if (!deleted) return createResponse(404, { error: "Schedule slot not found or already deleted" })
-    return createResponse(200, { message: "Schedule slot deleted" })
+    return createResponse(200, { message: "Schedule slot deleted", refunded })
   } catch (err) {
     return handleError(err)
   }
@@ -143,10 +145,16 @@ export const upsertScheduleOverride = async (event: APIGatewayProxyEventV2): Pro
     if (!parent) return createResponse(404, { error: "Schedule slot not found" })
     if (parent.deleted_at) return createResponse(409, { error: "Cannot set override on a deleted slot" })
 
-    const override = await scheduleService.upsertOverride(slotId, result.data, auth?.sub ?? null)
-    // null = the merge resolved to "no exception," and the row was deleted.
-    if (!override) return createResponse(200, { message: "Override cleared", override: null })
-    return createResponse(200, override)
+    const { override, refunded, restored } = await scheduleService.upsertOverride(
+      slotId, result.data, auth?.sub ?? null,
+    )
+    // Cancelling refunds bookings; un-cancelling puts them back. Counts are
+    // echoed so the UI can tell staff how many clients were affected.
+    // null override = the merge resolved to "no exception," and the row was deleted.
+    if (!override) {
+      return createResponse(200, { message: "Override cleared", override: null, refunded, restored })
+    }
+    return createResponse(200, { ...override, refunded, restored })
   } catch (err) {
     return handleError(err)
   }
@@ -213,9 +221,9 @@ export const deleteScheduleOverride = async (event: APIGatewayProxyEventV2): Pro
     if (!parsed.success) return createResponse(400, { error: "Invalid week param", issues: parsed.error.issues })
     if (!isMonday(parsed.data)) return createResponse(400, { error: "week must be a Monday (Asia/Beirut)" })
 
-    const deleted = await scheduleService.deleteOverride(slotId, parsed.data)
+    const { deleted, restored } = await scheduleService.deleteOverride(slotId, parsed.data)
     if (!deleted) return createResponse(404, { error: "Override not found" })
-    return createResponse(200, { message: "Override cleared" })
+    return createResponse(200, { message: "Override cleared", restored })
   } catch (err) {
     return handleError(err)
   }

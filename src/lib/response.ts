@@ -73,10 +73,18 @@ export const handleError = (err: unknown): APIGatewayProxyResultV2 => {
     })
   }
   if (error.code === "23503") {
+    // Forward `constraint` so the frontend can name what's blocking the delete.
+    // Postgres names FKs <child_table>_<column>_fkey, so the constraint alone
+    // identifies the referencing table — no extra COUNT query needed. `detail`
+    // ("Key (id)=(42) is still referenced from table ...") is passed through for
+    // devtools; note it names the parent key, NOT the blocking rows, so it can't
+    // tell us *which* sessions are in the way, only that some are.
     return createResponse(400, {
       error: "Foreign key violation",
       code: "FK_VIOLATION",
       message: error.message,
+      ...(error.constraint ? { constraint: error.constraint } : {}),
+      ...(error.detail ? { detail: error.detail } : {}),
     })
   }
   // Exclusion constraint violation — overlapping schedule slots

@@ -72,6 +72,21 @@ export const getBeirutToday = (): string => {
 }
 
 /**
+ * The calendar date a recurring slot lands on in a given week — the inverse of
+ * getBeirutDayOfWeek. `weekStart` is the Beirut Monday, `dayOfWeek` is the
+ * project convention (0 = Monday … 6 = Sunday), so the date is a plain offset.
+ *
+ * Mirrors the `week_start + day_of_week` arithmetic in scheduleService's
+ * getSlotsForWeek query — keep the two in step. Pure UTC math on a date-only
+ * value, so no DST/timezone drift is possible.
+ */
+export const classDateForWeek = (weekStart: string, dayOfWeek: number): string => {
+  const d = new Date(`${weekStart}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + dayOfWeek)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
  * Day-of-week for a YYYY-MM-DD date as interpreted in Beirut, mapped to the
  * project's convention (0 = Monday, 6 = Sunday — matches schedule.day_of_week).
  * Used to validate that a session's class_date actually lands on the day-of-week

@@ -1,4 +1,6 @@
 import { executeQuery, pool } from "../lib/db"
+import { getBeirutToday, classDateForWeek } from "../lib/time"
+import * as sessionService from "./sessionService"
 import type {
   ScheduleSlotJoined,
   ScheduleSlotForWeek,
@@ -129,6 +131,24 @@ export const getSlotForDate = async (
   return rows[0] ?? null
 }
 
+// ── Cancellation transitions ───────────────────────────────────────────────
+
+/**
+ * Classifies what an override write does to the cancelled state. Only a genuine
+ * transition moves client balances — re-saving an already-cancelled week (an
+ * edited cancel_reason, a toggled fully-booked flag, a double-clicked save)
+ * must return "none" so nobody gets credited twice.
+ *
+ * Pure and exported so the idempotency rule is unit-testable on its own; the
+ * refund path is otherwise only reachable through a transaction.
+ */
+export type CancelTransition = "none" | "cancelled" | "uncancelled"
+
+export const cancelTransition = (was: boolean, now: boolean): CancelTransition => {
+  if (was === now) return "none"
+  return now ? "cancelled" : "uncancelled"
+}
+
 // ── Template-level writes ──────────────────────────────────────────────────
 
 export const createSlot = async (data: CreateScheduleSlotDto): Promise<ScheduleSlotJoined> => {
@@ -170,16 +190,57 @@ export const updateSlot = async (
 /**
  * Soft-delete: flips `deleted_at` to NOW(). Preserves the row and all linked
  * override history. Idempotent — re-deleting a deleted slot is a no-op.
- * Returns true if a row was newly marked deleted, false if it was already
- * deleted or doesn't exist.
+ *
+ * Also refunds every client booked into a FUTURE occurrence of this class: the
+ * class is no longer going to run, so nobody should stay charged for it. Past
+ * occurrences are left alone — they already happened and were legitimately
+ * consumed (see refundFutureSessionsForSlot).
+ *
+ * Transactional: the refunds and the delete commit together. A half-applied
+ * state here means either clients paying for a class that no longer exists, or
+ * credited sessions for a class still on the calendar.
+ *
+ * Returns { deleted, refunded } — refunded is the session count, so the API can
+ * tell staff how many clients were credited.
  */
-export const softDeleteSlot = async (id: number): Promise<boolean> => {
-  const rows = await executeQuery(
-    `UPDATE schedule SET deleted_at = NOW(), updated_at = NOW()
-     WHERE id = $1 AND deleted_at IS NULL RETURNING id`,
-    [id]
-  )
-  return rows.length > 0
+export const softDeleteSlot = async (
+  id: number,
+): Promise<{ deleted: boolean; refunded: number }> => {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+
+    // Lock the slot first so a concurrent delete can't also refund. The
+    // deleted_at IS NULL predicate makes this the idempotency gate: the second
+    // caller finds no row and skips the refund entirely.
+    const slotResult = await client.query(
+      `SELECT id FROM schedule WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [id],
+    )
+    if (slotResult.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return { deleted: false, refunded: 0 }
+    }
+
+    const refunded = await sessionService.refundFutureSessionsForSlot(
+      client,
+      id,
+      getBeirutToday(),
+    )
+
+    await client.query(
+      `UPDATE schedule SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [id],
+    )
+
+    await client.query("COMMIT")
+    return { deleted: true, refunded }
+  } catch (err) {
+    await client.query("ROLLBACK")
+    throw err
+  } finally {
+    client.release()
+  }
 }
 
 // ── Override-level reads/writes ────────────────────────────────────────────
@@ -203,16 +264,22 @@ export const getOverride = async (
  *     the override entirely, since an all-false row would violate the
  *     meaningful CHECK constraint anyway).
  *  4. Otherwise INSERT/UPDATE.
+ *  5. If `is_cancelled` flipped, refund (false→true) or restore (true→false)
+ *     every booking for that occurrence.
  *
  * Wrapped in a transaction so concurrent admin clicks can't race into an
  * inconsistent state (two upserts on the same key with one DELETE in the
- * middle would otherwise be possible).
+ * middle would otherwise be possible), and so the refunds commit with the
+ * cancellation that triggered them.
+ *
+ * Returns the override row (or null when cleared) plus how many sessions were
+ * refunded/restored, so the API can report it to staff.
  */
 export const upsertOverride = async (
   slotId: number,
   data: UpsertScheduleOverrideDto,
   createdBy: string | null
-): Promise<ScheduleOverride | null> => {
+): Promise<{ override: ScheduleOverride | null; refunded: number; restored: number }> => {
   const client = await pool.connect()
   try {
     await client.query("BEGIN")
@@ -235,6 +302,42 @@ export const upsertOverride = async (
         : data.cancel_reason,
     }
 
+    // Did this write actually flip the cancelled state? See cancelTransition —
+    // only a genuine transition moves client balances.
+    const transition = cancelTransition(prev?.is_cancelled ?? false, merged.is_cancelled)
+
+    // The actual calendar date this recurring slot falls on in the target week.
+    // Needed to find the sessions booked into this specific occurrence.
+    const slotRow = await client.query<{ day_of_week: number }>(
+      `SELECT day_of_week FROM schedule WHERE id = $1`,
+      [slotId],
+    )
+    const classDate = slotRow.rows[0]
+      ? classDateForWeek(data.week_start, slotRow.rows[0].day_of_week)
+      : null
+
+    let refunded = 0
+    let restored = 0
+
+    if (classDate && transition === "cancelled") {
+      // Future occurrences only. Cancelling a week that has already passed is a
+      // record-keeping correction — the class ran (or didn't) and attendance was
+      // settled at the time, so we don't retroactively move anyone's balance.
+      if (classDate >= getBeirutToday()) {
+        refunded = await sessionService.refundSessionsForClassOccurrence(
+          client, slotId, classDate,
+        )
+      }
+    } else if (classDate && transition === "uncancelled") {
+      // Un-cancel restores whatever this feature refunded, whenever it ran. No
+      // date guard: if a refund is outstanding it must be reversible, even if
+      // the class date has since passed — otherwise undoing a mistaken cancel
+      // the following week would silently leave everyone a free session up.
+      restored = await sessionService.restoreSessionsForClassOccurrence(
+        client, slotId, classDate,
+      )
+    }
+
     // If the merged result is meaningless, delete the override entirely.
     if (!merged.is_fully_booked && !merged.is_cancelled) {
       if (prev) {
@@ -244,7 +347,7 @@ export const upsertOverride = async (
         )
       }
       await client.query("COMMIT")
-      return null
+      return { override: null, refunded, restored }
     }
 
     // INSERT or UPDATE the row. ON CONFLICT keys on the unique (week_start, slot_id).
@@ -268,7 +371,7 @@ export const upsertOverride = async (
     )
 
     await client.query("COMMIT")
-    return upserted.rows[0]
+    return { override: upserted.rows[0], refunded, restored }
   } catch (err) {
     await client.query("ROLLBACK")
     throw err
@@ -277,11 +380,60 @@ export const upsertOverride = async (
   }
 }
 
-export const deleteOverride = async (slotId: number, weekStart: string): Promise<boolean> => {
-  const rows = await executeQuery(
-    `DELETE FROM schedule_overrides
-     WHERE slot_id = $1 AND week_start = $2 RETURNING id`,
-    [slotId, weekStart]
-  )
-  return rows.length > 0
+/**
+ * Explicit "revert this week to normal" — the other way an override goes away.
+ * Mirrors upsertOverride's un-cancel path: if the row being cleared was a
+ * cancellation, the refunds it caused are reversed. Without this, clearing an
+ * override via DELETE instead of a both-flags-false PUT would leave every
+ * client permanently credited for a class that's back on the calendar.
+ *
+ * Returns { deleted, restored }.
+ */
+export const deleteOverride = async (
+  slotId: number,
+  weekStart: string,
+): Promise<{ deleted: boolean; restored: number }> => {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+
+    // Lock + read before deleting so we know whether it was a cancellation.
+    const existing = await client.query<{ is_cancelled: boolean }>(
+      `SELECT is_cancelled FROM schedule_overrides
+        WHERE slot_id = $1 AND week_start = $2 FOR UPDATE`,
+      [slotId, weekStart],
+    )
+    if (existing.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return { deleted: false, restored: 0 }
+    }
+
+    let restored = 0
+    if (existing.rows[0].is_cancelled) {
+      const slotRow = await client.query<{ day_of_week: number }>(
+        `SELECT day_of_week FROM schedule WHERE id = $1`,
+        [slotId],
+      )
+      if (slotRow.rows[0]) {
+        restored = await sessionService.restoreSessionsForClassOccurrence(
+          client,
+          slotId,
+          classDateForWeek(weekStart, slotRow.rows[0].day_of_week),
+        )
+      }
+    }
+
+    await client.query(
+      `DELETE FROM schedule_overrides WHERE slot_id = $1 AND week_start = $2`,
+      [slotId, weekStart],
+    )
+
+    await client.query("COMMIT")
+    return { deleted: true, restored }
+  } catch (err) {
+    await client.query("ROLLBACK")
+    throw err
+  } finally {
+    client.release()
+  }
 }

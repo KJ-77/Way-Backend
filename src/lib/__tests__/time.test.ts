@@ -8,7 +8,13 @@
 // ============================================================================
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { getBeirutWeekStart, isMonday, getBeirutToday, getBeirutDayOfWeek } from "../time"
+import {
+  getBeirutWeekStart,
+  isMonday,
+  getBeirutToday,
+  getBeirutDayOfWeek,
+  classDateForWeek,
+} from "../time"
 
 describe("getBeirutWeekStart", () => {
   it("returns the same Monday for a Wednesday in mid-week", () => {
@@ -93,5 +99,58 @@ describe("getBeirutDayOfWeek", () => {
     ["2026-06-21", 6], // Sunday
   ])("returns the correct DOW for %s", (date, expected) => {
     expect(getBeirutDayOfWeek(date)).toBe(expected)
+  })
+})
+
+// ── classDateForWeek ────────────────────────────────────────────────────────
+// The inverse of getBeirutDayOfWeek: given the week's Monday and a slot's
+// day_of_week, which calendar date does that class actually fall on?
+//
+// This drives which sessions get refunded when a week is cancelled — an
+// off-by-one here refunds the wrong day's clients, so it's worth pinning
+// exhaustively rather than spot-checking.
+describe("classDateForWeek", () => {
+  it.each([
+    [0, "2026-06-15"], // Monday
+    [1, "2026-06-16"], // Tuesday
+    [2, "2026-06-17"], // Wednesday
+    [3, "2026-06-18"], // Thursday
+    [4, "2026-06-19"], // Friday
+    [5, "2026-06-20"], // Saturday
+    [6, "2026-06-21"], // Sunday
+  ])("maps day_of_week %i to %s for the week of 2026-06-15", (dow, expected) => {
+    expect(classDateForWeek("2026-06-15", dow)).toBe(expected)
+  })
+
+  it("is the exact inverse of getBeirutDayOfWeek", () => {
+    const weekStart = "2026-06-15"
+    for (let dow = 0; dow <= 6; dow++) {
+      expect(getBeirutDayOfWeek(classDateForWeek(weekStart, dow))).toBe(dow)
+    }
+  })
+
+  it("rolls into the next month correctly", () => {
+    // Week of Mon 2026-06-29 → Sunday is 2026-07-05, crossing the month boundary.
+    expect(classDateForWeek("2026-06-29", 6)).toBe("2026-07-05")
+  })
+
+  it("rolls across a year boundary correctly", () => {
+    // Week of Mon 2026-12-28 → Sunday is 2027-01-03.
+    expect(classDateForWeek("2026-12-28", 6)).toBe("2027-01-03")
+  })
+
+  it("handles a leap day", () => {
+    // 2028 is a leap year. Week of Mon 2028-02-28 → Tuesday is Feb 29.
+    expect(classDateForWeek("2028-02-28", 1)).toBe("2028-02-29")
+  })
+
+  it("returns the week start itself for day_of_week 0", () => {
+    expect(classDateForWeek("2026-03-02", 0)).toBe("2026-03-02")
+  })
+
+  it("is unaffected by DST — Beirut springs forward on 2026-03-29", () => {
+    // Week of Mon 2026-03-23 contains the DST shift (Sun 2026-03-29). Because
+    // the helper does date-only UTC arithmetic, the Sunday is still +6 days.
+    expect(classDateForWeek("2026-03-23", 6)).toBe("2026-03-29")
   })
 })

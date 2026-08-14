@@ -10,7 +10,7 @@ import { getBeirutWeekStart, getBeirutToday, getBeirutDayOfWeek } from "../lib/t
 const BASE_SELECT = `
   SELECT
     s.id, s.user_package_id, s.schedule_slot_id, s.class_date,
-    s.session_nb, s.attendance, s.notes, s.created_at,
+    s.session_nb, s.attendance, s.refunded_from_attendance, s.notes, s.created_at,
     up.user_id, up.package_id,
     u.full_name  AS user_name,
     p.package_type AS package_name,
@@ -46,6 +46,178 @@ export const attendanceRefundDelta = (prev: Attendance, next: Attendance): numbe
   if (prevCounted && !nextCounted) return 1   // refund (e.g. booked → cancelled - no charge)
   if (!prevCounted && nextCounted) return -1  // re-deduct (e.g. cancelled - no charge → attended)
   return 0
+}
+
+// ── Class-cancellation refunds ─────────────────────────────────────────────
+// When a class stops happening — cancelled for a week, or its slot removed from
+// the schedule — every client who paid a session for it gets that session back.
+//
+// The refund reuses the existing idiom: set attendance to 'cancelled - no
+// charge' (the one value that doesn't consume a session) and credit the linked
+// subscription. `refunded_from_attendance` remembers the pre-refund value so
+// un-cancelling can put it back exactly (see migration 006).
+//
+// These take a transaction client rather than opening their own, because the
+// refund must commit or roll back together with the cancellation that caused
+// it. A class that reads "cancelled" while clients are still charged for it —
+// or the reverse — is the exact state this whole feature exists to prevent.
+
+// Minimal shape of pg's PoolClient. Typed structurally to avoid importing pg
+// types into the service layer (same approach as adjustLinkedSubscription).
+type TxClient = { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> }
+
+/**
+ * Core refund routine. `dateClause` is the SQL predicate selecting which
+ * occurrences to refund and must reference $2 onward; callers supply the params.
+ *
+ * Only touches sessions that (a) currently consume a session and (b) haven't
+ * already been auto-refunded. That second filter is what makes this idempotent:
+ * re-running it over the same occurrence is a no-op, so a duplicate override
+ * write can't double-credit anyone.
+ *
+ * Returns the number of sessions refunded, for reporting back to staff.
+ */
+async function refundSessions(
+  client: TxClient,
+  dateClause: string,
+  params: unknown[],
+): Promise<number> {
+  // Lock the target rows first so a concurrent booking or attendance edit on
+  // the same occurrence serialises behind us instead of racing the credit.
+  // Ordered by id to keep lock acquisition consistent and avoid deadlocking
+  // against another refund touching an overlapping set.
+  const affected = await client.query(
+    `SELECT id
+       FROM sessions
+      WHERE schedule_slot_id = $1
+        AND ${dateClause}
+        AND attendance <> 'cancelled - no charge'
+        AND refunded_from_attendance IS NULL
+      ORDER BY id
+      FOR UPDATE`,
+    params,
+  )
+  if (affected.rows.length === 0) return 0
+
+  const ids = affected.rows.map((r) => r.id as number)
+
+  // Credit each subscription once, by however many of its sessions we're
+  // refunding. Deleting a slot can refund weeks of recurring bookings that all
+  // sit on the SAME subscription, so this has to aggregate — a per-row +1 would
+  // either need N statements or silently under-credit on a join.
+  //
+  // LEAST() caps at the sold capacity so corrupt data can't over-credit. In
+  // consistent data it never binds: each of these sessions decremented the sub
+  // when it was created, so giving them back cannot exceed sessions_included.
+  await client.query(
+    `UPDATE user_packages up
+        SET remaining_sessions = LEAST(
+              up.remaining_sessions + c.n,
+              (SELECT sessions_included FROM packages WHERE id = up.package_id)
+            )
+       FROM (
+         SELECT user_package_id, COUNT(*)::int AS n
+           FROM sessions WHERE id = ANY($1::int[])
+          GROUP BY user_package_id
+       ) c
+      WHERE up.id = c.user_package_id`,
+    [ids],
+  )
+
+  // Flip attendance, stashing the previous value so this is reversible.
+  await client.query(
+    `UPDATE sessions
+        SET refunded_from_attendance = attendance,
+            attendance = 'cancelled - no charge'
+      WHERE id = ANY($1::int[])`,
+    [ids],
+  )
+
+  return ids.length
+}
+
+/**
+ * Refunds every counted booking for ONE class occurrence — used when a single
+ * week is cancelled via a schedule override.
+ */
+export const refundSessionsForClassOccurrence = (
+  client: TxClient,
+  slotId: number,
+  classDate: string,
+): Promise<number> =>
+  refundSessions(client, `class_date = $2::date`, [slotId, classDate])
+
+/**
+ * Refunds every counted booking for ALL occurrences of a slot on or after
+ * `fromDate` — used when a slot is removed from the schedule entirely.
+ *
+ * Bounded to future dates on purpose: past occurrences already happened and
+ * were legitimately consumed. Retiring a class going forward says nothing about
+ * the ones that already ran, and refunding them would hand back sessions for
+ * classes clients actually attended.
+ */
+export const refundFutureSessionsForSlot = (
+  client: TxClient,
+  slotId: number,
+  fromDate: string,
+): Promise<number> =>
+  refundSessions(client, `class_date >= $2::date`, [slotId, fromDate])
+
+/**
+ * Reverses refundSessionsForClassOccurrence — used when staff un-cancel a week.
+ * Restores each session's original attendance and takes the credited session
+ * back off the subscription.
+ *
+ * Only rows carrying a refund marker are touched, so bookings made *after* the
+ * cancellation (or manually edited since) are left exactly as they are.
+ *
+ * Returns the number of sessions restored.
+ */
+export const restoreSessionsForClassOccurrence = async (
+  client: TxClient,
+  slotId: number,
+  classDate: string,
+): Promise<number> => {
+  const affected = await client.query(
+    `SELECT id
+       FROM sessions
+      WHERE schedule_slot_id = $1
+        AND class_date = $2::date
+        AND refunded_from_attendance IS NOT NULL
+      ORDER BY id
+      FOR UPDATE`,
+    [slotId, classDate],
+  )
+  if (affected.rows.length === 0) return 0
+
+  const ids = affected.rows.map((r) => r.id as number)
+
+  // Take the credited sessions back. GREATEST() floors at zero so we can't
+  // drive a balance negative if the client spent the refunded session elsewhere
+  // before staff undid the cancellation — the un-cancel is the primary intent
+  // and shouldn't fail on that edge case. It leaves the client one session up,
+  // which is the right way to be wrong.
+  await client.query(
+    `UPDATE user_packages up
+        SET remaining_sessions = GREATEST(up.remaining_sessions - c.n, 0)
+       FROM (
+         SELECT user_package_id, COUNT(*)::int AS n
+           FROM sessions WHERE id = ANY($1::int[])
+          GROUP BY user_package_id
+       ) c
+      WHERE up.id = c.user_package_id`,
+    [ids],
+  )
+
+  await client.query(
+    `UPDATE sessions
+        SET attendance = refunded_from_attendance,
+            refunded_from_attendance = NULL
+      WHERE id = ANY($1::int[])`,
+    [ids],
+  )
+
+  return ids.length
 }
 
 export const getAllSessions = async (): Promise<SessionJoined[]> =>
