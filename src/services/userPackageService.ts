@@ -1,4 +1,5 @@
 import { executeQuery } from "../lib/db"
+import { getBeirutToday } from "../lib/time"
 import type {
   UserPackageRow, UserPackageJoined,
   CreateUserPackageDto, UpdateUserPackageDto,
@@ -43,15 +44,28 @@ export const getUserPackageById = async (id: number): Promise<UserPackageJoined 
 export const createUserPackage = async (
   data: CreateUserPackageDto
 ): Promise<UserPackageJoined | null> => {
+  // The purchase date anchors the expiry: a subscription bought three weeks ago and
+  // recorded today still expires two months after it was BOUGHT, not two months
+  // from now. Otherwise backdating would quietly hand the client extra weeks.
+  //
+  // Defaults to today in Beirut rather than Postgres's CURRENT_DATE. RDS runs in
+  // UTC, so between midnight and ~3am in the studio CURRENT_DATE is still
+  // yesterday — a subscription sold at 1am would have been dated the day before.
+  const purchaseDate = data.purchase_date ?? getBeirutToday()
+
+  // `$4::date + INTERVAL '2 months'` yields a timestamp; the ::date cast keeps the
+  // column a clean date. Postgres clamps month-end correctly (Jan 31 → Mar 31, and
+  // Dec 31 + 2 months → Feb 28/29), so no manual end-of-month handling is needed.
   const inserted = await executeQuery<UserPackageRow>(
     `INSERT INTO user_packages
-       (user_id, package_id, remaining_sessions, remaining_weight, expiry_date, notes)
+       (user_id, package_id, remaining_sessions, remaining_weight,
+        purchase_date, expiry_date, notes)
      SELECT $1, $2, p.sessions_included, p.weight_included,
-            CURRENT_DATE + INTERVAL '2 months', $3
+            $4::date, ($4::date + INTERVAL '2 months')::date, $3
      FROM packages p
      WHERE p.id = $2
      RETURNING *`,
-    [data.user_id, data.package_id, data.notes ?? null]
+    [data.user_id, data.package_id, data.notes ?? null, purchaseDate]
   )
 
   // No row inserted means the package_id didn't exist

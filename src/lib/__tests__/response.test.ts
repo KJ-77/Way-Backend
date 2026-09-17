@@ -18,6 +18,7 @@
 // ============================================================================
 
 import { describe, it, expect, vi } from "vitest"
+import type { APIGatewayProxyStructuredResultV2 } from "aws-lambda"
 import { createResponse, parseBody, handleError } from "../response"
 
 // ── createResponse ──────────────────────────────────────────────────────────
@@ -200,5 +201,56 @@ describe("handleError", () => {
   it("emits code SERVER_ERROR for unknown errors", () => {
     const body = JSON.parse(handleError(new Error("boom")).body as string)
     expect(body.code).toBe("SERVER_ERROR")
+  })
+})
+
+// ── Service-layer business errors ───────────────────────────────────────────
+// Services throw Object.assign(new Error(msg), { statusCode, code }). A handler that
+// forgot to bridge these used to turn every one into a 500 SERVER_ERROR — so the
+// bridge now lives in handleError itself.
+
+describe("handleError — business errors", () => {
+  // handleError returns APIGatewayProxyResultV2, which is `string | object`, so
+  // .statusCode / .body don't type-check without narrowing. It always returns the
+  // structured form in practice; this cast states that once.
+  const run = (err: unknown) => handleError(err) as APIGatewayProxyStructuredResultV2
+
+  // Silence the console.error handleError always emits.
+  vi.spyOn(console, "error").mockImplementation(() => {})
+
+  const businessError = (statusCode: number, code: string, message: string) =>
+    Object.assign(new Error(message), { statusCode, code })
+
+  it("forwards a business error's status and code instead of 500ing", () => {
+    // Two staff approving the same message: the loser must hear "already handled",
+    // not "Server error".
+    const result = run(businessError(409, "ALREADY_PROCESSED", "already sent"))
+    expect(result.statusCode).toBe(409)
+    const body = JSON.parse(result.body as string)
+    expect(body.code).toBe("ALREADY_PROCESSED")
+    expect(body.message).toBe("already sent")
+  })
+
+  it("forwards 4xx and 5xx business errors alike", () => {
+    expect(run(businessError(400, "INVALID_PHONE", "bad")).statusCode).toBe(400)
+    expect(run(businessError(502, "SEND_UNCONFIRMED", "?")).statusCode).toBe(502)
+  })
+
+  it("does not treat a numeric Postgres code as a business code", () => {
+    // pg codes are numeric strings and have their own mapping below. Even if one
+    // somehow arrived with a statusCode attached, it must still map as pg.
+    const pgError = Object.assign(new Error("dup"), {
+      statusCode: 400, code: "23505", constraint: "users_phone_key",
+    })
+    const result = run(pgError)
+    expect(result.statusCode).toBe(409)
+    expect(JSON.parse(result.body as string).code).toBe("PHONE_TAKEN")
+  })
+
+  it("ignores a statusCode with no code of ours", () => {
+    // Only explicitly-coded business errors are forwarded; anything else keeps the
+    // existing behaviour.
+    const result = run(Object.assign(new Error("?"), { statusCode: 418 }))
+    expect(result.statusCode).toBe(500)
   })
 })

@@ -11,7 +11,7 @@
 //      refactor.
 //   3. SMS fallback slots in as a second implementation, not a second codepath.
 
-import type { MessageChannel } from "../types"
+import type { MessageChannel, TemplateCategory } from "../types"
 
 // Business-initiated send. WhatsApp requires a pre-approved template for these,
 // so we pass the template's registered name + positional variables rather than
@@ -22,14 +22,30 @@ export interface SendTemplateParams {
   language: string
   // Positional values for {{1}}, {{2}}, … in order.
   variables: string[]
+  // The already-substituted message text, snapshotted at enqueue time.
+  //
+  // WhatsApp IGNORES this — Meta does its own substitution from `variables`, and
+  // sending raw text would bypass the approved-template requirement. SMS has no
+  // concept of a provider-side template, so it sends this string verbatim.
+  //
+  // Passing both is what lets one interface serve both transports: each provider
+  // takes the half it can actually use, and the queue preview stays byte-identical
+  // to what the client receives either way.
+  renderedBody: string
+  // Utility vs marketing. Meta infers this from the registered template, but SMS
+  // needs it explicitly — AWS routes TRANSACTIONAL traffic at a higher delivery
+  // priority than PROMOTIONAL, and the distinction is also a compliance one.
+  category?: TemplateCategory
 }
 
 // Free-form send. Only legal inside an open 24-hour customer service window
 // (WhatsApp) — the SERVICE layer enforces that rule before calling this, since
-// it's a business rule, not a transport concern.
+// it's a business rule, not a transport concern. SMS has no window, so free-form
+// is always legal there.
 export interface SendTextParams {
   to: string
   body: string
+  category?: TemplateCategory
 }
 
 export interface SendResult {

@@ -142,3 +142,50 @@ describe("UpdateUserSchema", () => {
     expect(result.success).toBe(false)
   })
 })
+
+// ── Phone handling: strict on create, lenient on update ────────────────────
+//
+// Admin-created clients use their phone as their Cognito USERNAME, and every later
+// Cognito call finds them by passing `users.phone` back in. These tests pin down the
+// split that keeps the stored phone and the Cognito username from drifting apart.
+
+describe("phone normalisation", () => {
+  const base = { full_name: "Sara", referral_source: "Walk-In" as const }
+
+  it("normalises a local-format number to E.164 on create", () => {
+    // Before this, Cognito rejected anything without a leading "+" and creating
+    // the client simply failed.
+    const result = CreateUserSchema.safeParse({ ...base, phone: "70 123 456" })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.phone).toBe("+96170123456")
+  })
+
+  it("rejects an unparseable number on create", () => {
+    const result = CreateUserSchema.safeParse({ ...base, phone: "not a phone" })
+    expect(result.success).toBe(false)
+  })
+
+  it("does NOT normalise the phone on update — it only strips whitespace", () => {
+    // The edit form always resends the (locked) phone field. Normalising here would
+    // turn an unrelated edit into a phone "change", fire a Cognito update that never
+    // used to fire, and fail the whole edit for legacy rows with no matching user.
+    const result = UpdateUserSchema.safeParse({ phone: "70 123 456" })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.phone).toBe("70123456")
+  })
+
+  it("never rejects a stored phone on update, however odd it looks", () => {
+    // toE164 is stricter than Cognito. A number Cognito accepted but toE164 would
+    // reject must not make the client impossible to edit.
+    for (const legacy of ["03/123456", "+123", "0096170123456"]) {
+      expect(UpdateUserSchema.safeParse({ phone: legacy }).success).toBe(true)
+    }
+  })
+
+  it("leaves an already-canonical phone byte-identical on update", () => {
+    // The common case: every Cognito-backed client already has +digits stored, so
+    // the handler's "did the phone change?" comparison stays false.
+    const result = UpdateUserSchema.safeParse({ phone: "+96170123456" })
+    if (result.success) expect(result.data.phone).toBe("+96170123456")
+  })
+})

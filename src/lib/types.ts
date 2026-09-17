@@ -164,6 +164,11 @@ export interface CreateUserPackageDto {
   user_id: string
   package_id: number
   notes?: string
+  // "YYYY-MM-DD" — the day the client actually bought it. Staff often record a
+  // subscription after the fact, so this can be in the past (never the future).
+  // Optional at the API level for backward compatibility; defaults to today in
+  // Beirut. The admin UI always sends it.
+  purchase_date?: string
 }
 
 export interface UpdateUserPackageDto {
@@ -319,7 +324,18 @@ export type UpdateAccountDto = z.infer<typeof UpdateAccountSchema>
 // single ordered read per conversation.
 
 export type MessageDirection = "outbound" | "inbound"
-export type MessageChannel = "whatsapp" | "sms"
+// How a message is DELIVERED — recorded per message and per conversation.
+//   whatsapp_manual  A staff member sends it by hand from the studio's own WhatsApp,
+//                    via a wa.me deep link the dashboard opens for them. The live
+//                    channel today. No provider, no API, no delivery receipt — so a
+//                    "sent" status is a human's word, not a network's.
+//   sms              AWS End User Messaging SMS. Built and tested, but dormant: AWS
+//                    declined production access until the account has billing history.
+//   whatsapp         Reserved for the WhatsApp Business API, if it's ever adopted. Kept
+//                    separate from whatsapp_manual on purpose — the API carries rules
+//                    (the 24-hour window) and guarantees (delivery receipts) that a
+//                    person typing in their own app does not.
+export type MessageChannel = "whatsapp" | "sms" | "whatsapp_manual"
 export type MessageStatus =
   | "pending_approval"
   | "queued"
@@ -419,6 +435,9 @@ export interface MessageJoined extends Message {
   user_name: string
   phone: string
   template_name: string | null
+  // Joined from message_templates. Drives SMS TRANSACTIONAL vs PROMOTIONAL
+  // routing at send time; NULL for free-form messages, which have no template.
+  template_category: TemplateCategory | null
 }
 
 export interface Broadcast {
@@ -443,6 +462,20 @@ export interface BroadcastJoined extends Broadcast {
   sent_count: number
   failed_count: number
   pending_count: number
+}
+
+// A client who matched the audience but whose stored phone number couldn't be
+// parsed into E.164, so they were left out of the fan-out. Surfaced to the UI so
+// staff can fix the number rather than wondering why the counts don't add up.
+export interface SkippedRecipient {
+  id: string
+  name: string
+  phone: string
+}
+
+// createBroadcast's return: the campaign, plus anyone it couldn't reach.
+export interface BroadcastCreated extends BroadcastJoined {
+  skipped: SkippedRecipient[]
 }
 
 // ── Communications DTOs ──

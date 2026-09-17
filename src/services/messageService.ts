@@ -1,12 +1,22 @@
 import { executeQuery, pool } from "../lib/db"
-import { getProvider, renderTemplate, variablesToArray, isServiceWindowOpen } from "../lib/messaging"
+import {
+  getProvider,
+  renderTemplate,
+  variablesToArray,
+  isServiceWindowOpen,
+  isManualChannel,
+  DEFAULT_CHANNEL,
+} from "../lib/messaging"
 import { sendWithRetry } from "../lib/messaging/send-policy"
+import { toE164 } from "../lib/phone"
 import type {
   MessageChannel,
   MessageJoined,
   MessageTemplate,
   ConversationJoined,
   BroadcastJoined,
+  BroadcastCreated,
+  SkippedRecipient,
   CreateBroadcastDto,
 } from "../lib/types"
 
@@ -32,7 +42,8 @@ const BROADCAST_CHUNK_SIZE = 25
 // ── Shared SELECT fragments ─────────────────────────────────────────────────
 
 const MESSAGE_SELECT = `
-  SELECT m.*, c.user_id, c.phone, u.full_name AS user_name, t.name AS template_name
+  SELECT m.*, c.user_id, c.phone, u.full_name AS user_name,
+         t.name AS template_name, t.category AS template_category
   FROM messages m
   JOIN conversations c ON c.id = m.conversation_id
   JOIN users u ON u.id = c.user_id
@@ -45,6 +56,53 @@ export const getTemplates = async (): Promise<MessageTemplate[]> =>
   executeQuery<MessageTemplate>(
     "SELECT * FROM message_templates ORDER BY category, name",
   )
+
+export const getTemplateById = async (id: number): Promise<MessageTemplate | null> => {
+  const rows = await executeQuery<MessageTemplate>(
+    "SELECT * FROM message_templates WHERE id = $1",
+    [id],
+  )
+  return rows[0] ?? null
+}
+
+/**
+ * Edits a template's wording.
+ *
+ * Only possible because we're on SMS. Under WhatsApp the body was whatever Meta had
+ * approved, and any change meant resubmitting for review — so this endpoint would
+ * have been a lie. SMS templates are local text, so an edit is live immediately.
+ *
+ * `name` and `trigger_event` are intentionally not updatable: `trigger_event` is the
+ * key that wires a template to an automatic event, and changing it would silently
+ * disconnect the trigger with no visible symptom.
+ *
+ * Note this does NOT rewrite already-queued messages. Their `body` was snapshotted
+ * at enqueue time on purpose — editing a template must never retroactively change
+ * what a staff member already read and approved.
+ */
+export const updateTemplate = async (
+  id: number,
+  fields: Partial<Pick<MessageTemplate, "body" | "variable_labels" | "category" | "is_active">>,
+): Promise<MessageTemplate> => {
+  const keys = Object.keys(fields) as (keyof typeof fields)[]
+  if (keys.length === 0) businessError(400, "NO_FIELDS", "Nothing to update")
+
+  // Same dynamic-SET idiom as the other services: only touch supplied fields, and
+  // parameterise every value so nothing is interpolated into SQL.
+  const setClauses = keys.map((key, i) => `${key} = $${i + 2}`)
+  const values = keys.map(key => {
+    const value = fields[key]
+    // variable_labels is a JSONB column — pg needs it pre-serialised.
+    return key === "variable_labels" ? JSON.stringify(value) : value
+  })
+
+  const rows = await executeQuery<MessageTemplate>(
+    `UPDATE message_templates SET ${setClauses.join(", ")} WHERE id = $1 RETURNING *`,
+    [id, ...values],
+  )
+  if (!rows[0]) businessError(404, "TEMPLATE_NOT_FOUND", "Message template not found")
+  return rows[0]
+}
 
 /**
  * Finds the single active template wired to an automatic trigger, e.g.
@@ -69,7 +127,7 @@ export const getTemplateByTrigger = async (triggerEvent: string): Promise<Messag
  */
 export const findOrCreateConversation = async (
   userId: string,
-  channel: MessageChannel = "whatsapp",
+  channel: MessageChannel = DEFAULT_CHANNEL,
 ): Promise<{ id: number; phone: string }> => {
   const existing = await executeQuery<{ id: number; phone: string }>(
     "SELECT id, phone FROM conversations WHERE user_id = $1 AND channel = $2",
@@ -84,12 +142,26 @@ export const findOrCreateConversation = async (
   if (!user[0]) businessError(404, "USER_NOT_FOUND", "Client not found")
   if (!user[0].phone) businessError(400, "NO_PHONE", "This client has no phone number on file")
 
+  // Normalise to E.164 at the boundary. AWS rejects anything else outright, and the
+  // `users.phone` column is free text that has historically held "03/123456",
+  // "70 123 456" and friends. Doing it here (rather than trusting the stored value)
+  // means a legacy row that predates the normalisation migration still works.
+  const normalised = toE164(user[0].phone)
+  if (!normalised) {
+    businessError(
+      400,
+      "INVALID_PHONE",
+      `"${user[0].phone}" isn't a phone number we can send to. ` +
+        "Update the client's number to a valid Lebanese mobile.",
+    )
+  }
+
   const created = await executeQuery<{ id: number; phone: string }>(
     `INSERT INTO conversations (user_id, channel, phone)
      VALUES ($1, $2, $3)
      ON CONFLICT (user_id, channel) DO UPDATE SET updated_at = NOW()
      RETURNING id, phone`,
-    [userId, channel, user[0].phone],
+    [userId, channel, normalised],
   )
   return created[0]
 }
@@ -139,10 +211,25 @@ export const markConversationRead = async (conversationId: number): Promise<void
 
 // ── Queue reads ─────────────────────────────────────────────────────────────
 
+/**
+ * Everything waiting on a human's decision: drafts to approve, and sends that
+ * failed and can be re-queued.
+ *
+ * Failed messages were originally left out, but the dashboard splits this list by
+ * status to fill both the queue and the "Failed to send" pile — so without them that
+ * pile was permanently empty and failures were invisible.
+ *
+ * Written as an explicit OR rather than `status IN (...)` on purpose. Each arm
+ * matches the predicate of one partial index (messages_pending_idx and
+ * messages_failed_idx, the latter added in migration 008), which lets Postgres
+ * BitmapOr the two. An IN list becomes `status = ANY(...)`, which the planner can't
+ * match against either partial predicate.
+ */
 export const getPendingQueue = async (): Promise<MessageJoined[]> =>
   executeQuery<MessageJoined>(
     `${MESSAGE_SELECT}
-     WHERE m.status = 'pending_approval' AND m.direction = 'outbound'
+     WHERE (m.status = 'pending_approval' AND m.direction = 'outbound')
+        OR (m.status = 'failed' AND m.direction = 'outbound')
      ORDER BY m.created_at DESC`,
   )
 
@@ -152,18 +239,66 @@ export const getPendingQueue = async (): Promise<MessageJoined[]> =>
  * auto-retried, because retrying an unconfirmed send is how a client receives
  * the same message twice.
  */
+//
+// The 5-minute grace period only applies to PROVIDER channels, where 'queued' can
+// mean "the API call is still in flight" and flagging it early would be wrong.
+// A hand-sent WhatsApp message is different: the moment staff open WhatsApp, our
+// part is over and only a human can say what happened. So those surface
+// immediately — this list is where staff confirm them. Without this, a message
+// would drop out of the approval queue on handoff and appear nowhere for five
+// minutes.
+//
+// Index: served by the partial messages_queued_idx (WHERE status = 'queued'). The
+// OR prevents a pure range scan on last_attempt_at, but the partial index already
+// narrows to the 'queued' rows, which are a near-empty set by design.
 export const getUnconfirmed = async (): Promise<MessageJoined[]> =>
   executeQuery<MessageJoined>(
     `${MESSAGE_SELECT}
      WHERE m.status = 'queued'
        AND m.provider_message_id IS NULL
-       AND m.last_attempt_at < NOW() - INTERVAL '${UNCONFIRMED_AFTER_MS} milliseconds'
+       AND (
+         m.channel::text = 'whatsapp_manual'
+         OR m.last_attempt_at < NOW() - INTERVAL '${UNCONFIRMED_AFTER_MS} milliseconds'
+       )
      ORDER BY m.last_attempt_at ASC`,
   )
 
 const getMessageById = async (id: number): Promise<MessageJoined | null> => {
   const rows = await executeQuery<MessageJoined>(`${MESSAGE_SELECT} WHERE m.id = $1`, [id])
   return rows[0] ?? null
+}
+
+/**
+ * True when an identical automatic draft is ALREADY sitting in the queue unapproved.
+ *
+ * Used by the trigger layer to avoid stacking duplicates. The semantics matter:
+ * this checks only for `pending_approval`, deliberately NOT for messages already
+ * sent. So —
+ *
+ *   • Nudging an item's stage back and forth before anyone approves the first
+ *     draft leaves ONE draft, not five.
+ *   • But if the "ready for pickup" message was already sent, and the piece later
+ *     goes back to the kiln and returns to "ready", a NEW message is drafted. That's
+ *     correct: the client genuinely needs telling again.
+ *
+ * Scoped by trigger + trigger_ref (the item id), so two different pieces belonging
+ * to the same client never suppress each other.
+ */
+export const hasPendingTriggerMessage = async (
+  trigger: string,
+  triggerRef: string,
+): Promise<boolean> => {
+  const rows = await executeQuery<{ exists: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM messages
+       WHERE status = 'pending_approval'
+         AND direction = 'outbound'
+         AND trigger = $1
+         AND trigger_ref = $2
+     ) AS exists`,
+    [trigger, triggerRef],
+  )
+  return rows[0]?.exists === true
 }
 
 // ── Drafting ────────────────────────────────────────────────────────────────
@@ -187,7 +322,7 @@ interface EnqueueTemplateArgs {
  * client will read, and so later edits to the template never rewrite history.
  */
 export const enqueueTemplateMessage = async (args: EnqueueTemplateArgs): Promise<MessageJoined> => {
-  const { userId, templateId, variables, trigger, channel = "whatsapp" } = args
+  const { userId, templateId, variables, trigger, channel = DEFAULT_CHANNEL } = args
 
   const templates = await executeQuery<MessageTemplate>(
     "SELECT * FROM message_templates WHERE id = $1",
@@ -214,10 +349,16 @@ export const enqueueTemplateMessage = async (args: EnqueueTemplateArgs): Promise
 }
 
 /**
- * Drafts a free-form reply. Only legal while the 24-hour customer service window
- * is open (i.e. the client messaged us recently) — outside it WhatsApp requires
- * a pre-approved template, so we reject early with a clear code rather than
- * letting the provider fail at send time.
+ * Drafts a free-form message.
+ *
+ * On SMS this is always legal — there's no template requirement and no service
+ * window, so staff can write whatever they like and send it after approval. That
+ * makes free-form the PRIMARY path on SMS, not the exception it is on WhatsApp.
+ *
+ * The 24-hour window check below is retained but only fires for `channel =
+ * 'whatsapp'`. It's dead code today; it stays because the rule is real and will
+ * apply again the moment WhatsApp is switched on, and re-deriving it later from
+ * memory is how compliance bugs get written.
  */
 export const enqueueFreeformReply = async (args: {
   userId: string
@@ -225,7 +366,7 @@ export const enqueueFreeformReply = async (args: {
   channel?: MessageChannel
   createdBy?: string | null
 }): Promise<MessageJoined> => {
-  const { userId, body, channel = "whatsapp" } = args
+  const { userId, body, channel = DEFAULT_CHANNEL } = args
   const conversation = await findOrCreateConversation(userId, channel)
 
   const inbound = await executeQuery<{ last_inbound_at: string | null }>(
@@ -272,11 +413,17 @@ export const approveAndSend = async (
   messageId: number,
   accountId: string,
 ): Promise<MessageJoined> => {
+  // `channel::text` rather than comparing the enum directly: if migration 008 hasn't
+  // been applied yet, the literal 'whatsapp_manual' isn't a valid enum value and a
+  // direct comparison would throw — breaking approvals for every other channel too.
+  // Comparing as text never parses the literal as an enum. The WHERE is on the
+  // primary key, so losing index use on `channel` costs nothing.
   const claimed = await executeQuery<{ id: number }>(
     `UPDATE messages
      SET status = 'queued', approved_by = $2, approved_at = NOW(),
          attempt_count = attempt_count + 1, last_attempt_at = NOW()
      WHERE id = $1 AND status = 'pending_approval' AND direction = 'outbound'
+       AND channel::text <> 'whatsapp_manual'
      RETURNING id`,
     [messageId, accountId],
   )
@@ -284,6 +431,15 @@ export const approveAndSend = async (
   if (claimed.length === 0) {
     const existing = await getMessageById(messageId)
     if (!existing) businessError(404, "MESSAGE_NOT_FOUND", "Message not found")
+    // A hand-sent message has no provider to dispatch through. Refusing here — before
+    // it's claimed — keeps it in the queue instead of stranding it in 'queued'.
+    if (isManualChannel(existing.channel)) {
+      businessError(
+        400,
+        "MANUAL_CHANNEL",
+        "This message is sent by hand from WhatsApp — use Open in WhatsApp instead.",
+      )
+    }
     businessError(
       409,
       "ALREADY_PROCESSED",
@@ -292,6 +448,56 @@ export const approveAndSend = async (
   }
 
   return dispatch(messageId)
+}
+
+/**
+ * Claims a hand-sent message: the staff member is about to send it themselves from
+ * the studio's WhatsApp, via a wa.me link the dashboard opens.
+ *
+ * This is approveAndSend() without the send. It exists for two reasons:
+ *
+ *   1. RACE PROTECTION. The same atomic compare-and-swap as approval, so two staff
+ *      members can't both open WhatsApp for the same message and both send it. The
+ *      loser gets ALREADY_PROCESSED and the dashboard closes their tab.
+ *
+ *   2. HONEST STATE. The row moves to 'queued' with no provider_message_id — the
+ *      exact shape this system already uses for "handed off, result unknown". We
+ *      genuinely can't see whether the person pressed send in WhatsApp, so we don't
+ *      claim to. A human confirms via resolveUnconfirmed(). If nobody does, it
+ *      surfaces in "Needs attention" after UNCONFIRMED_AFTER_MS on its own.
+ */
+export const handoffMessage = async (
+  messageId: number,
+  accountId: string,
+): Promise<MessageJoined> => {
+  const claimed = await executeQuery<{ id: number }>(
+    `UPDATE messages
+     SET status = 'queued', approved_by = $2, approved_at = NOW(),
+         attempt_count = attempt_count + 1, last_attempt_at = NOW()
+     WHERE id = $1 AND status = 'pending_approval' AND direction = 'outbound'
+       AND channel::text = 'whatsapp_manual'
+     RETURNING id`,
+    [messageId, accountId],
+  )
+
+  if (claimed.length === 0) {
+    const existing = await getMessageById(messageId)
+    if (!existing) businessError(404, "MESSAGE_NOT_FOUND", "Message not found")
+    if (!isManualChannel(existing.channel)) {
+      businessError(
+        400,
+        "NOT_MANUAL_CHANNEL",
+        "This message is sent automatically — approve it instead.",
+      )
+    }
+    businessError(
+      409,
+      "ALREADY_PROCESSED",
+      `This message is already ${existing.status.replace("_", " ")} — someone may have got there first.`,
+    )
+  }
+
+  return (await getMessageById(messageId))!
 }
 
 /**
@@ -328,10 +534,22 @@ async function dispatch(messageId: number): Promise<MessageJoined> {
           templateName: message.template_name,
           language: "en",
           variables: variablesToArray(message.template_variables),
+          // `message.body` is the text rendered and snapshotted at enqueue time —
+          // exactly what a staff member read in the approval queue. SMS sends this
+          // verbatim; WhatsApp ignores it and re-substitutes from `variables`.
+          renderedBody: message.body,
+          // Drives TRANSACTIONAL vs PROMOTIONAL routing on SMS. Falls back to
+          // 'utility' rather than 'marketing' so a template with a missing category
+          // is treated as the safer, higher-priority kind.
+          category: message.template_category ?? "utility",
         }),
       )
     }
-    return withTimeout(provider.sendText({ to: message.phone, body: message.body }))
+    // Free-form messages are staff-written replies, never promotional blasts —
+    // a broadcast always goes through the template path above.
+    return withTimeout(
+      provider.sendText({ to: message.phone, body: message.body, category: "utility" }),
+    )
   })
 
   if (outcome.result) {
@@ -371,15 +589,26 @@ async function dispatch(messageId: number): Promise<MessageJoined> {
 
 // ── Queue management ────────────────────────────────────────────────────────
 
-/** Discards a drafted message without sending. Only valid while pending. */
+/**
+ * Discards a message without sending it.
+ *
+ * Valid for a pending draft, or for a FAILED send that nobody wants to retry.
+ * Without the second case a failure could only ever leave the "Failed to send" pile
+ * by being re-queued, so one that shouldn't be resent would sit there forever.
+ *
+ * Never valid for 'queued' — that message may already have reached the client, and
+ * calling it cancelled would be a lie. Those go through resolveUnconfirmed().
+ */
 export const cancelMessage = async (messageId: number, accountId: string): Promise<MessageJoined> => {
   const rows = await executeQuery<{ id: number }>(
     `UPDATE messages SET status = 'cancelled', approved_by = $2, approved_at = NOW()
-     WHERE id = $1 AND status = 'pending_approval'
+     WHERE id = $1 AND status IN ('pending_approval', 'failed')
      RETURNING id`,
     [messageId, accountId],
   )
-  if (rows.length === 0) businessError(409, "ALREADY_PROCESSED", "This message is no longer pending.")
+  if (rows.length === 0) {
+    businessError(409, "ALREADY_PROCESSED", "This message can no longer be discarded.")
+  }
   return (await getMessageById(messageId))!
 }
 
@@ -401,11 +630,43 @@ export const requeueMessage = async (messageId: number): Promise<MessageJoined> 
  * Human resolution of an unconfirmed send. Staff checks WhatsApp and tells us
  * what actually happened — we never guess, because guessing either double-sends
  * or silently drops a delivered message.
+ *
+ * `not_sent` is for hand-sent WhatsApp only: the person opened WhatsApp and then
+ * didn't press send. Nothing went out, so the message goes back into the approval
+ * queue untouched. It's refused for provider channels, where reaching 'queued'
+ * means an API call was actually made — "nothing was sent" can't be known there,
+ * and re-queuing on that assumption is exactly how a client gets a message twice.
  */
 export const resolveUnconfirmed = async (
   messageId: number,
-  resolution: "sent" | "failed",
+  resolution: "sent" | "failed" | "not_sent",
 ): Promise<MessageJoined> => {
+  if (resolution === "not_sent") {
+    // Clears the approval pair together (the messages_approval_pair CHECK requires
+    // both-or-neither), plus any error left by an earlier attempt.
+    const rows = await executeQuery<{ id: number }>(
+      `UPDATE messages
+       SET status = 'pending_approval', approved_by = NULL, approved_at = NULL,
+           error_code = NULL, error_message = NULL
+       WHERE id = $1 AND status = 'queued' AND channel::text = 'whatsapp_manual'
+       RETURNING id`,
+      [messageId],
+    )
+    if (rows.length === 0) {
+      const existing = await getMessageById(messageId)
+      if (!existing) businessError(404, "MESSAGE_NOT_FOUND", "Message not found")
+      if (!isManualChannel(existing.channel)) {
+        businessError(
+          400,
+          "NOT_MANUAL_CHANNEL",
+          "Only hand-sent messages can be marked as not sent. Choose sent or failed.",
+        )
+      }
+      businessError(409, "NOT_UNCONFIRMED", "This message isn't awaiting confirmation.")
+    }
+    return (await getMessageById(messageId))!
+  }
+
   const rows = await executeQuery<{ id: number }>(
     `UPDATE messages
      SET status = $2, sent_at = CASE WHEN $2 = 'sent' THEN COALESCE(sent_at, NOW()) ELSE sent_at END
@@ -417,7 +678,20 @@ export const resolveUnconfirmed = async (
   return (await getMessageById(messageId))!
 }
 
-// ── Inbound (called by the webhook handler in Phase 3) ──────────────────────
+// ── Inbound ─────────────────────────────────────────────────────────────────
+//
+// ⚠️ DORMANT ON SMS. Lebanon supports neither long codes nor short codes, and an
+// alphanumeric sender ID is outbound-only — so no inbound message can physically
+// reach us. Nothing calls this today.
+//
+// It is kept, fully working, for two reasons:
+//   1. It's the WhatsApp upgrade path. When WhatsApp is switched on, inbound
+//      starts arriving and this is already correct — including the at-least-once
+//      idempotency, which is easy to get wrong under time pressure later.
+//   2. Deleting it would also mean deleting the two inbound indexes and the
+//      inbox queries, which is a much larger and riskier change to reverse.
+//
+// See local/claude/plans/sms-implementation.md § "What SMS costs us".
 
 /**
  * Records a client's incoming message. Idempotent via the partial unique index
@@ -431,11 +705,14 @@ export const recordInboundMessage = async (args: {
   providerMessageId: string
   channel?: MessageChannel
 }): Promise<void> => {
-  const { phone, body, providerMessageId, channel = "whatsapp" } = args
+  const { phone, body, providerMessageId, channel = DEFAULT_CHANNEL } = args
 
+  // Match on the normalised form: the stored `users.phone` may still be in a
+  // legacy local format, so compare E.164 to E.164 rather than string-to-string.
+  const normalised = toE164(phone) ?? phone
   const users = await executeQuery<{ id: string }>(
     "SELECT id FROM users WHERE phone = $1 AND is_active LIMIT 1",
-    [phone],
+    [normalised],
   )
   // Unknown sender — log and drop rather than throwing, so an unrecognised
   // number can't wedge the webhook into an endless retry loop.
@@ -472,9 +749,22 @@ export const applyStatusUpdate = async (
   errorMessage?: string,
 ): Promise<void> => {
   if (status === "failed") {
+    // Guard against regression, same principle as the ladder below.
+    //
+    // This matters far more on SMS than it did on WhatsApp. AWS can emit a carrier
+    // event up to 72 HOURS after the send, several of the failure statuses are
+    // explicitly documented as transient (UNKNOWN, UNREACHABLE, CARRIER_UNREACHABLE,
+    // TTL_EXPIRED), and events are not ordered. Without this guard, a stale
+    // "unreachable" arriving after a successful "delivered" would flip a message
+    // that the client demonstrably received back to 'failed' — and staff would
+    // resend it.
+    //
+    // A message that has reached the recipient's device is terminal. Nothing later
+    // can un-deliver it.
     await executeQuery(
       `UPDATE messages SET status = 'failed', error_message = $2
-       WHERE provider_message_id = $1`,
+       WHERE provider_message_id = $1
+         AND status NOT IN ('delivered', 'read')`,
       [providerMessageId, errorMessage ?? "Provider reported failure"],
     )
     return
@@ -499,6 +789,23 @@ export const applyStatusUpdate = async (
 }
 
 // ── Opt-out ─────────────────────────────────────────────────────────────────
+//
+// Honouring opt-out is a compliance obligation, and AWS asks how we handle it in
+// the production-access request. On WhatsApp this was automatic: a client replied
+// STOP and `recordInboundMessage` flipped the flag without anyone noticing.
+//
+// SMS in Lebanon has NO inbound path, so that automation cannot run. The opt-out
+// route is therefore MANUAL and has three parts, all of which must stay true:
+//
+//   1. Marketing SMS must tell the recipient how to opt out in words — we can't
+//      say "reply STOP", because replying is impossible. It has to name a real
+//      channel the studio actually monitors (phone, or WhatsApp to the studio's
+//      own number). This lives in the template wording, not in code.
+//   2. Staff flip the flag from the dashboard, which calls setMarketingOptOut().
+//   3. createBroadcast() excludes opted-out clients at fan-out time (unchanged).
+//
+// `isOptOutKeyword` below is dormant alongside recordInboundMessage — it is the
+// WhatsApp path and it is deliberately preserved, not deleted.
 
 // Keywords that count as "stop messaging me". Matched on the whole trimmed
 // message so a sentence merely containing the word doesn't opt someone out.
@@ -549,8 +856,30 @@ export const getBroadcasts = async (): Promise<BroadcastJoined[]> =>
 export const createBroadcast = async (
   dto: CreateBroadcastDto,
   accountId: string,
-): Promise<BroadcastJoined> => {
+): Promise<BroadcastCreated> => {
+  const channel = dto.channel ?? DEFAULT_CHANNEL
+
+  // Broadcasts are refused on hand-sent WhatsApp, deliberately.
+  //   • Practically: 130 recipients would mean 130 separate trips into WhatsApp.
+  //   • Dangerously: a burst of near-identical messages from one personal number is
+  //     exactly what Meta's spam detection bans for, with no grace period — and it's
+  //     the number the whole studio runs on.
+  // The studio handles announcements through a WhatsApp group/community instead.
+  // Checked BEFORE opening the transaction so nothing is written.
+  if (isManualChannel(channel)) {
+    businessError(
+      400,
+      "BROADCAST_NOT_SUPPORTED",
+      "Broadcasts aren't available for hand-sent WhatsApp. Use a WhatsApp group or community for announcements.",
+    )
+  }
+
   const client = await pool.connect()
+  // Recipients whose stored phone number can't be parsed into E.164. Collected
+  // rather than thrown on: one client with a mistyped number must not block a
+  // campaign to the other 129. Returned to the caller so the UI can name them.
+  const skipped: SkippedRecipient[] = []
+
   try {
     await client.query("BEGIN")
 
@@ -566,7 +895,7 @@ export const createBroadcast = async (
        VALUES ($1, $2, $3, $4, $5, 'draft', $6) RETURNING id`,
       [
         dto.name, dto.template_id, JSON.stringify(dto.variables ?? {}),
-        dto.channel ?? "whatsapp", JSON.stringify(dto.audience ?? {}), accountId,
+        channel, JSON.stringify(dto.audience ?? {}), accountId,
       ],
     )
     const broadcastId = broadcastRes.rows[0].id
@@ -581,11 +910,20 @@ export const createBroadcast = async (
     }
 
     for (const recipient of recipients.rows) {
+      // Normalise before fan-out. A number we can't parse would fail at send time
+      // anyway — catching it here means the failure is reported once, up front,
+      // instead of as N mystery failures halfway through the drain.
+      const phone = toE164(recipient.phone)
+      if (!phone) {
+        skipped.push({ id: recipient.id, name: recipient.full_name, phone: recipient.phone })
+        continue
+      }
+
       const convRes = await client.query<{ id: number }>(
         `INSERT INTO conversations (user_id, channel, phone) VALUES ($1, $2, $3)
          ON CONFLICT (user_id, channel) DO UPDATE SET updated_at = NOW()
          RETURNING id`,
-        [recipient.id, dto.channel ?? "whatsapp", recipient.phone],
+        [recipient.id, channel, phone],
       )
 
       // {{1}} is the client's name by convention; the rest are campaign-wide.
@@ -598,15 +936,25 @@ export const createBroadcast = async (
             template_variables, body, trigger, broadcast_id, created_by)
          VALUES ($1, 'outbound', $2, 'pending_approval', 'template', $3, $4, $5, 'broadcast', $6, $7)`,
         [
-          convRes.rows[0].id, dto.channel ?? "whatsapp", dto.template_id,
+          convRes.rows[0].id, channel, dto.template_id,
           JSON.stringify(variables), body, broadcastId, accountId,
         ],
       )
     }
 
+    // Everyone was unreachable — that's a failed campaign, not a successful one
+    // with zero recipients. Roll back rather than leave an empty broadcast row.
+    if (skipped.length === recipients.rows.length) {
+      businessError(
+        400,
+        "NO_VALID_RECIPIENTS",
+        "None of the matching clients have a usable phone number.",
+      )
+    }
+
     await client.query("COMMIT")
     const all = await getBroadcasts()
-    return all.find(b => b.id === broadcastId)!
+    return { ...all.find(b => b.id === broadcastId)!, skipped }
   } catch (err) {
     await client.query("ROLLBACK")
     throw err

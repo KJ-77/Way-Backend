@@ -3,6 +3,32 @@ import { createResponse, parseBody, getPathParam, getQueryParam, handleError } f
 import { getAuthContext, requireRole } from "../../lib/auth"
 import type { CreateUserPackageDto, UpdateUserPackageDto, PackageStatus, UserPackageJoined } from "../../lib/types"
 import * as userPackageService from "../../services/userPackageService"
+import { getBeirutToday } from "../../lib/time"
+
+/**
+ * Returns why a purchase date is unacceptable, or null if it's fine.
+ *
+ * "Not in the future" is judged against BEIRUT's today, not the server's. Lambda
+ * runs in UTC, which is 2–3 hours behind Beirut — so between midnight and ~3am in
+ * the studio, UTC is still on yesterday. Comparing against UTC would reject a
+ * subscription bought "today" as being in the future.
+ */
+export const purchaseDateProblem = (value: unknown): string | null => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "purchase_date must be a date in YYYY-MM-DD format"
+  }
+  // Round-trip through Date to reject impossible dates like 2026-02-31, which the
+  // regex alone lets through.
+  const parsed = new Date(`${value}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    return `${value} isn't a real date`
+  }
+  // Plain string comparison is safe: both sides are zero-padded YYYY-MM-DD.
+  if (value > getBeirutToday()) {
+    return "purchase_date can't be in the future"
+  }
+  return null
+}
 
 // Admin/studio-manager can create, update, and (admin-only) delete subscriptions.
 // Clients can READ their own subscriptions only — never mutate.
@@ -77,6 +103,19 @@ export const createUserPackage = async (
     const data = parseBody<CreateUserPackageDto>(event.body)
     if (!data.user_id || !data.package_id) {
       return createResponse(400, { error: "user_id and package_id are required" })
+    }
+
+    // Validate the purchase date if one was sent. Checked here rather than left to
+    // Postgres so the failure is a clear 400, not an opaque cast error.
+    if (data.purchase_date !== undefined) {
+      const problem = purchaseDateProblem(data.purchase_date)
+      if (problem) {
+        return createResponse(400, {
+          error: problem,
+          code: "INVALID_PURCHASE_DATE",
+          message: problem,
+        })
+      }
     }
 
     const row = await userPackageService.createUserPackage(data)

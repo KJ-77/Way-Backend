@@ -52,6 +52,22 @@ provider:
           Resource:
             - arn:aws:lambda:eu-west-3:*:function:${self:service}-${self:provider.stage}-accountDbOps
             - arn:aws:lambda:eu-west-3:*:function:${self:service}-${self:provider.stage}-userDbOps
+        # ── AWS End User Messaging SMS ──
+        # Lets the messaging Lambdas send SMS. `sms-voice` is the IAM namespace for
+        # End User Messaging SMS (the service was formerly Amazon Pinpoint SMS).
+        #
+        # ⚠️ Resource is "*" for now. Narrow it to the sender ID ARN once the sender
+        # ID is registered — it looks like:
+        #   arn:aws:sms-voice:<region>:<account>:sender-id/<SenderId>/<ISO country>
+        # Leaving it wide means any Lambda in this service can send SMS from any
+        # origination identity in the account, which is more than the queue needs.
+        - Effect: Allow
+          Action:
+            - sms-voice:SendTextMessage
+            # Read-only, used to verify the sender ID exists at deploy/health time.
+            - sms-voice:DescribeSenderIds
+            - sms-voice:DescribeAccountAttributes
+          Resource: "*"
   environment:
     DB_HOST: ${env:DB_HOST}
     DB_USER: ${env:DB_USER}
@@ -62,6 +78,31 @@ provider:
     COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID}
     CLIENT_COGNITO_USER_POOL_ID: ${env:CLIENT_COGNITO_USER_POOL_ID}
     CLIENT_COGNITO_CLIENT_ID: ${env:CLIENT_COGNITO_CLIENT_ID}
+    # ── Messaging ──
+    # DEFAULT_MESSAGE_CHANNEL picks how new messages are delivered.
+    #   whatsapp_manual (default) — staff send each one by hand from the studio's own
+    #                               WhatsApp via a wa.me link. Needs no provider at all,
+    #                               so MESSAGING_PROVIDER is irrelevant for it.
+    #   sms                       — AWS End User Messaging SMS. Built but dormant: AWS
+    #                               declined production access until the account has
+    #                               a paid billing history.
+    #
+    # MESSAGING_PROVIDER only matters for provider channels (sms). Unset or "mock" →
+    # messages are logged, never sent. Set "aws-sms" ONLY once AWS grants production
+    # access. Every default here is the safe one.
+    MESSAGING_PROVIDER: ${env:MESSAGING_PROVIDER, 'mock'}
+    DEFAULT_MESSAGE_CHANNEL: ${env:DEFAULT_MESSAGE_CHANNEL, 'whatsapp_manual'}
+    # Alphanumeric sender ID (max 11 chars), e.g. "WayStudio". Required when
+    # MESSAGING_PROVIDER=aws-sms — getProvider() throws a clear error without it.
+    SMS_SENDER_ID: ${env:SMS_SENDER_ID, ''}
+    # End User Messaging SMS is region-scoped; leave blank to use the stack region.
+    SMS_REGION: ${env:SMS_REGION, ''}
+    # Configuration set name that publishes delivery events to SNS. Without it the
+    # smsStatus function below never fires and messages never progress past 'sent'.
+    SMS_CONFIGURATION_SET: ${env:SMS_CONFIGURATION_SET, ''}
+    # Per-message spend ceiling in USD (AWS MaxPrice format, e.g. "0.05"). A cheap
+    # guard against a pricing surprise on multi-part Arabic messages.
+    SMS_MAX_PRICE: ${env:SMS_MAX_PRICE, ''}
   httpApi:
     cors:
       allowedOrigins:
@@ -101,7 +142,7 @@ provider:
         functionName: customJwtAuthorizer
         identitySource: $request.header.Authorization
         enableSimpleResponses: true
-        resultTtlInSeconds: 0
+        resultTtlInSeconds: 300
 
 functions:
   # ── Lambda Authorizer ──
@@ -1042,5 +1083,244 @@ functions:
       - httpApi:
           path: /accounts/{id}/reset-password
           method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Messaging: SMS delivery receipts ──
+  # Consumes carrier events (delivered / failed / etc.) that AWS End User Messaging
+  # SMS publishes to SNS, and ratchets messages.status forward accordingly.
+  # Inside the VPC because it writes to RDS.
+  #
+  # ⚠️ SNS SUBSCRIPTION DELIBERATELY COMMENTED OUT — SMS IS DORMANT.
+  #
+  # AWS declined SMS production access (new account, no billing history yet), so
+  # the studio sends by hand via WhatsApp for now and nothing publishes to this
+  # topic. The subscription references ${env:SMS_EVENT_TOPIC_ARN} with no fallback,
+  # and that variable isn't in .env — left active, it fails the ENTIRE
+  # `serverless deploy`, blocking every unrelated feature.
+  #
+  # To reactivate when SMS comes back:
+  #   1. Add to .env:
+  #        SMS_EVENT_TOPIC_ARN=arn:aws:sns:eu-west-3:779257801284:way-sms-topic
+  #   2. Uncomment the `events:` block below.
+  #   3. serverless deploy
+  #
+  # The topic, the `way-sms` configuration set and the event destination all still
+  # exist in AWS, so nothing needs recreating. `topicName` must match the last
+  # segment of the ARN — Serverless names the subscription resource from it.
+  smsStatus:
+    handler: src/functions/messaging/status-handler.smsStatusHandler
+    vpc:
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    # events:
+    #   - sns:
+    #       arn: ${env:SMS_EVENT_TOPIC_ARN}
+    #       topicName: way-sms-topic
+
+  # ── Communications: approval queue ──
+  # Staff-only (admin + studio-manager); the handler enforces this per-request since
+  # client Cognito tokens also reach this API.
+  #
+  # The `&messagingVpc` anchor below is defined once and aliased (`*messagingVpc`) by
+  # every messaging function — same VPC config as everything else that touches RDS,
+  # without sixteen copies of it.
+  getMessageQueue:
+    handler: src/functions/messaging/handler.getQueue
+    vpc: &messagingVpc
+      securityGroupIds:
+        - sg-07ae81e354436980c
+      subnetIds:
+        - subnet-0d78211d7c5202876
+        - subnet-01084e20e83286143
+        - subnet-01554d440f1605680
+    events:
+      - httpApi:
+          path: /messages/queue
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  # The "needs attention" pile — sends we handed to the provider but never got a
+  # confirmed result for. Never auto-retried; a human resolves each one.
+  getUnconfirmedMessages:
+    handler: src/functions/messaging/handler.getUnconfirmed
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages/unconfirmed
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  createMessage:
+    handler: src/functions/messaging/handler.createMessage
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # Approve + send. Sends SYNCHRONOUSLY, so this is the one messaging endpoint that
+  # can approach API Gateway's 29s ceiling; the service bounds provider calls at 8s
+  # with at most 2 retries to stay well inside it.
+  approveMessage:
+    handler: src/functions/messaging/handler.approveMessage
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages/{id}/approve
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # Claims a hand-sent WhatsApp message the moment a staff member presses "Open in
+  # WhatsApp". Sends nothing — the person does that in their own app. Stops two
+  # staff sending the same message and records the "handed off, unconfirmed" state.
+  handoffMessage:
+    handler: src/functions/messaging/handler.handoffMessage
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages/{id}/handoff
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  cancelMessage:
+    handler: src/functions/messaging/handler.cancelMessage
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages/{id}/cancel
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  requeueMessage:
+    handler: src/functions/messaging/handler.requeueMessage
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages/{id}/requeue
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  resolveMessage:
+    handler: src/functions/messaging/handler.resolveMessage
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /messages/{id}/resolve
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Communications: message history per client ──
+  # A one-way send log on SMS (Lebanon has no inbound). Becomes a real two-way inbox
+  # unchanged if WhatsApp is switched on.
+  getConversations:
+    handler: src/functions/messaging/handler.getConversations
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /conversations
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  getConversationMessages:
+    handler: src/functions/messaging/handler.getConversationMessages
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /conversations/{id}/messages
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  markConversationRead:
+    handler: src/functions/messaging/handler.markConversationRead
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /conversations/{id}/read
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Communications: templates ──
+  # Editable in place now that we're on SMS — there's no provider review step, so a
+  # reworded template is live immediately.
+  getMessageTemplates:
+    handler: src/functions/messaging/handler.getTemplates
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /message-templates
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  updateMessageTemplate:
+    handler: src/functions/messaging/handler.updateTemplate
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /message-templates/{id}
+          method: PUT
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Communications: broadcasts ── (admin only — costs money per recipient)
+  getBroadcasts:
+    handler: src/functions/messaging/handler.getBroadcasts
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /broadcasts
+          method: GET
+          authorizer:
+            name: customJwtAuthorizer
+
+  createBroadcast:
+    handler: src/functions/messaging/handler.createBroadcast
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /broadcasts
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # Sends the next chunk. The frontend calls this in a loop behind a progress bar —
+  # 130 recipients can't be sent inside one 29s request.
+  drainBroadcast:
+    handler: src/functions/messaging/handler.drainBroadcast
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /broadcasts/{id}/drain
+          method: POST
+          authorizer:
+            name: customJwtAuthorizer
+
+  # ── Marketing opt-out ──
+  # The ONLY opt-out path on SMS: no inbound means "reply STOP" is impossible, so
+  # staff record it here when a client asks by phone or in person.
+  setMarketingOptOut:
+    handler: src/functions/messaging/handler.setMarketingOptOut
+    vpc: *messagingVpc
+    events:
+      - httpApi:
+          path: /users/{id}/marketing-opt-out
+          method: PUT
           authorizer:
             name: customJwtAuthorizer

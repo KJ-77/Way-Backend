@@ -3,6 +3,7 @@ import { createResponse, parseBody, getPathParam, getQueryParam, handleError } f
 import { getAuthContext, requireRole } from "../../lib/auth"
 import { CreateItemSchema, UpdateItemSchema } from "../../lib/schemas/item.schema"
 import * as itemService from "../../services/itemService"
+import { onItemStageChanged } from "../../services/messageTriggers"
 
 // Admin/studio-manager can create + update items; admin alone can delete.
 // Stage rewinds (moving the stage backward, which can trigger weight refunds)
@@ -83,10 +84,20 @@ export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
     // Gate stage rewinds to admins. We pre-fetch the current item to compare stages
     // without duplicating the comparison logic inside the service.
+    //
+    // `previousStage` / `isBackward` are hoisted out of the block because the
+    // messaging trigger below needs them too — updateItem() has several return
+    // paths (weight deduction, refund, un-discard…), so comparing here rather than
+    // inside the service means one hook instead of five.
+    let previousStage: string | null = null
+    let isBackward = false
+
     if (result.data.stage) {
       const current = await itemService.getItemById(id)
       if (!current) return createResponse(404, { error: "Item not found" })
-      if (itemService.isStageBackward(current.stage, result.data.stage)) {
+      previousStage = current.stage
+      isBackward = itemService.isStageBackward(current.stage, result.data.stage)
+      if (isBackward) {
         const rewindDenied = requireRole(auth, ...ITEM_REWIND_ROLES)
         if (rewindDenied) return rewindDenied
       }
@@ -94,6 +105,23 @@ export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
     const item = await itemService.updateItem(id, result.data)
     if (!item) return createResponse(404, { error: "Item not found" })
+
+    // Draft a progress message if this stage has a template wired to it. Awaited so
+    // Lambda doesn't freeze mid-query, but it cannot throw — a messaging failure
+    // must never turn a successful stage update into an error response.
+    if (previousStage && result.data.stage) {
+      await onItemStageChanged({
+        itemId: id,
+        userId: item.user_id,
+        userName: item.user_name,
+        description: item.description ?? null,
+        clayType: item.clay_type ?? null,
+        previousStage,
+        newStage: result.data.stage,
+        isBackward,
+      })
+    }
+
     return createResponse(200, item)
   } catch (err) {
     // Service throws with a custom statusCode for business logic errors (weight validation, etc.)

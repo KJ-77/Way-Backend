@@ -20,6 +20,7 @@ import {
   createUserPackage,
   updateUserPackage,
   deleteUserPackage,
+  purchaseDateProblem,
 } from "./handler"
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -269,6 +270,80 @@ describe("write handlers reject clients", () => {
       body: { user_id: "client-1", package_id: 1 },
     })
     const res = await createUserPackage(event)
+    expect((res as any).statusCode).toBe(201)
+  })
+})
+
+// ── Purchase date ───────────────────────────────────────────────────────────
+// Staff record subscriptions after the fact, so the purchase date can be in the
+// past. It drives the expiry date, so a bad value corrupts the subscription.
+
+describe("purchaseDateProblem", () => {
+  it("accepts today and past dates", () => {
+    expect(purchaseDateProblem("2025-01-01")).toBeNull()
+  })
+
+  it("rejects anything that isn't YYYY-MM-DD", () => {
+    expect(purchaseDateProblem("01/02/2025")).not.toBeNull()
+    expect(purchaseDateProblem("2025-1-1")).not.toBeNull()
+    expect(purchaseDateProblem(20250101)).not.toBeNull()
+    expect(purchaseDateProblem("")).not.toBeNull()
+  })
+
+  it("rejects impossible dates the format regex would let through", () => {
+    expect(purchaseDateProblem("2026-02-31")).toMatch(/real date/)
+    expect(purchaseDateProblem("2025-13-01")).toMatch(/real date/)
+  })
+
+  it("rejects future dates", () => {
+    expect(purchaseDateProblem("2999-01-01")).toMatch(/future/)
+  })
+
+  it("judges 'the future' by Beirut's calendar, not the server's UTC one", () => {
+    // 22:30 UTC on Jan 1 is already 00:30 on Jan 2 in Beirut (UTC+2 in winter).
+    // A subscription bought on the studio's Jan 2 must be accepted, even though
+    // the Lambda's own clock still says Jan 1.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-01-01T22:30:00Z"))
+    try {
+      expect(purchaseDateProblem("2026-01-02")).toBeNull()
+      expect(purchaseDateProblem("2026-01-03")).toMatch(/future/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe("createUserPackage — purchase date", () => {
+  const staffEvent = (body: Record<string, unknown>) =>
+    fakeEvent({ sub: "sm-1", source_pool: "admin", groups: "studio-manager", body })
+
+  beforeEach(() => {
+    vi.mocked(userPackageService.createUserPackage).mockResolvedValue(fakeSubscription())
+  })
+
+  it("passes a valid purchase date through to the service", async () => {
+    const res = await createUserPackage(
+      staffEvent({ user_id: "client-1", package_id: 1, purchase_date: "2025-03-10" }),
+    )
+    expect((res as any).statusCode).toBe(201)
+    expect(userPackageService.createUserPackage).toHaveBeenCalledWith(
+      expect.objectContaining({ purchase_date: "2025-03-10" }),
+    )
+  })
+
+  it("400s on an invalid purchase date without touching the database", async () => {
+    vi.mocked(userPackageService.createUserPackage).mockClear()
+    const res = await createUserPackage(
+      staffEvent({ user_id: "client-1", package_id: 1, purchase_date: "2999-01-01" }),
+    )
+    expect((res as any).statusCode).toBe(400)
+    expect(JSON.parse((res as any).body).code).toBe("INVALID_PURCHASE_DATE")
+    expect(userPackageService.createUserPackage).not.toHaveBeenCalled()
+  })
+
+  it("still works without a purchase date (the service defaults it)", async () => {
+    const res = await createUserPackage(staffEvent({ user_id: "client-1", package_id: 1 }))
     expect((res as any).statusCode).toBe(201)
   })
 })

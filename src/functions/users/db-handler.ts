@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda"
 import { executeQuery } from "../../lib/db"
 import { encodeDbError } from "../../lib/dbError"
+import { onClientCreated } from "../../services/messageTriggers"
 import type { User } from "../../lib/types"
 
 // Payload shape for direct Lambda invocations from the Cognito-facing handlers
@@ -51,6 +52,17 @@ const runDbOp = async (payload: DbOpsPayload): Promise<unknown> => {
          VALUES (${placeholders.join(", ")}) RETURNING *`,
         values,
       )
+
+      // Draft the welcome message. Hooked HERE rather than in the HTTP handler
+      // because both client-creation paths funnel through this insert — the admin
+      // "add client" flow and public self-signup — so one hook covers both.
+      //
+      // Awaited, not fire-and-forget: Lambda freezes the execution environment the
+      // moment the handler returns, so a floating promise would be suspended
+      // mid-query and the draft would silently never appear. onClientCreated can't
+      // throw (see messageTriggers.ts), so awaiting it cannot fail the insert.
+      await onClientCreated({ id: rows[0].id, full_name: rows[0].full_name })
+
       return rows[0]
     }
 

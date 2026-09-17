@@ -48,8 +48,36 @@ export const getQueryParam = (event: APIGatewayProxyEventV2, key: string): strin
 //   SELF_ROLE_CHANGE — 403 admin tried to change their own role (lockout risk)
 //   SELF_DELETE      — 403 admin tried to delete their own account (lockout risk)
 export const handleError = (err: unknown): APIGatewayProxyResultV2 => {
-  const error = err as Error & { code?: string; constraint?: string; detail?: string }
+  const error = err as Error & {
+    code?: string
+    constraint?: string
+    detail?: string
+    statusCode?: number
+  }
   console.error(error)
+
+  // ── Service-layer business errors ──
+  // Services throw `Object.assign(new Error(msg), { statusCode, code })` for
+  // expected, user-facing failures (ALREADY_PROCESSED, INVALID_PHONE, …). Honour
+  // them here so they reach the client with their real status and code.
+  //
+  // This used to be a per-handler bridge (`respondToServiceError` in sessions and
+  // class-types, an inline check in items), and a handler that forgot it silently
+  // turned every business error into a 500 SERVER_ERROR — which is exactly what
+  // happened to the messaging handler. Doing it here means a new handler can't
+  // get it wrong. The per-handler bridges still work; they just run first.
+  //
+  // Only our own SCREAMING_SNAKE_CASE codes are forwarded. Postgres codes are
+  // numeric ("23505") and belong to the branches below, so a pg error that
+  // somehow carried a statusCode still maps correctly.
+  const isOurCode = !!error.code && /^[A-Z][A-Z0-9_]*$/.test(error.code)
+  if (error.statusCode && isOurCode) {
+    return createResponse(error.statusCode, {
+      error: error.message,
+      code: error.code,
+      message: error.message,
+    })
+  }
 
   if (error.code === "23505") {
     if (error.constraint?.includes("phone")) {

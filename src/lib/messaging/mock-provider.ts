@@ -22,7 +22,12 @@ export class MockMessagingProvider implements MessagingProvider {
   readonly name = "mock"
   readonly channel: MessageChannel
 
-  constructor(channel: MessageChannel = "whatsapp") {
+  // Literal "sms" rather than importing DEFAULT_CHANNEL from ./index — index.ts
+  // imports this file, so reading the constant here would be a circular import.
+  // getProvider() always passes an explicit channel anyway; this default only
+  // covers direct construction in tests. (Not "whatsapp_manual": that channel has
+  // no provider at all, mock or otherwise.)
+  constructor(channel: MessageChannel = "sms") {
     this.channel = channel
   }
 
@@ -32,6 +37,9 @@ export class MockMessagingProvider implements MessagingProvider {
       template: params.templateName,
       language: params.language,
       variables: params.variables,
+      // Logged so a dev running against the mock sees the exact text that would
+      // have gone out, which is what the SMS provider actually transmits.
+      renderedBody: params.renderedBody,
     })
     return { providerMessageId: this.mockId() }
   }
