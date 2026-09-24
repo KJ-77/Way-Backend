@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
 import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
-import type { CreatePackageDto, UpdatePackageDto } from "../../lib/types"
+import { CreatePackageSchema, UpdatePackageSchema } from "../../lib/schemas/package.schema"
 import * as packageService from "../../services/packageService"
 
 // All endpoints require a logged-in user (any role). Anonymous catalog browse
@@ -42,15 +42,17 @@ export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIG
     const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
     if (denied) return denied
 
-    const data = parseBody<CreatePackageDto>(event.body)
-    if (!data.package_type) {
-      return createResponse(400, { error: "package_type is required" })
-    }
-    if (!data.class_type_id || typeof data.class_type_id !== "number") {
-      return createResponse(400, { error: "class_type_id is required" })
+    // Also fills validity_days with the default (60) when it isn't sent.
+    const result = CreatePackageSchema.safeParse(parseBody(event.body))
+    if (!result.success) {
+      return createResponse(400, {
+        error: "Validation failed",
+        code: "VALIDATION_FAILED",
+        issues: result.error.issues,
+      })
     }
 
-    const pkg = await packageService.createPackage(data)
+    const pkg = await packageService.createPackage(result.data)
     return createResponse(201, pkg)
   } catch (err) {
     return handleError(err)
@@ -65,8 +67,18 @@ export const updatePackage = async (event: APIGatewayProxyEventV2): Promise<APIG
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid package ID" })
 
-    const data = parseBody<UpdatePackageDto>(event.body)
-    const pkg = await packageService.updatePackage(id, data)
+    // The schema is also the column whitelist — the service turns the object's keys
+    // into the SET clause, so only keys that survive parsing may reach it.
+    const result = UpdatePackageSchema.safeParse(parseBody(event.body))
+    if (!result.success) {
+      return createResponse(400, {
+        error: "Validation failed",
+        code: "VALIDATION_FAILED",
+        issues: result.error.issues,
+      })
+    }
+
+    const pkg = await packageService.updatePackage(id, result.data)
     if (!pkg) return createResponse(404, { error: "Package not found" })
     return createResponse(200, pkg)
   } catch (err) {

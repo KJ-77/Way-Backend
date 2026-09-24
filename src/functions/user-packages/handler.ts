@@ -1,7 +1,8 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
 import { getAuthContext, requireRole } from "../../lib/auth"
-import type { CreateUserPackageDto, UpdateUserPackageDto, PackageStatus, UserPackageJoined } from "../../lib/types"
+import type { CreateUserPackageDto, PackageStatus, UserPackageJoined } from "../../lib/types"
+import { UpdateUserPackageSchema } from "../../lib/schemas/userPackage.schema"
 import * as userPackageService from "../../services/userPackageService"
 import { getBeirutToday } from "../../lib/time"
 
@@ -136,8 +137,18 @@ export const updateUserPackage = async (
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid subscription ID" })
 
-    const data = parseBody<UpdateUserPackageDto>(event.body)
-    const row = await userPackageService.updateUserPackage(id, data)
+    // The schema is also the column whitelist — the service turns the object's keys
+    // into the SET clause, so only keys that survive parsing may reach it.
+    const result = UpdateUserPackageSchema.safeParse(parseBody(event.body))
+    if (!result.success) {
+      return createResponse(400, {
+        error: "Validation failed",
+        code: "VALIDATION_FAILED",
+        issues: result.error.issues,
+      })
+    }
+
+    const row = await userPackageService.updateUserPackage(id, result.data)
     if (!row) return createResponse(404, { error: "Subscription not found" })
     return createResponse(200, { ...row, status: computeStatus(row) })
   } catch (err) {

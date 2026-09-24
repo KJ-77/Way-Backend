@@ -4,6 +4,7 @@ import {
   discardRefundAmount,
   undiscardRedeductAmount,
   requiresFreshWeightOnUndiscard,
+  itemSubscriptionProblem,
 } from "../itemService"
 
 describe("isStageBackward", () => {
@@ -168,5 +169,52 @@ describe("discard ↔ undiscard symmetry", () => {
     const refund = discardRefundAmount("picked up", "Studio", weight)
     const rededuct = undiscardRedeductAmount("picked up", "Studio", weight)
     expect(refund - rededuct).toBe(0)
+  })
+})
+
+// ── itemSubscriptionProblem ────────────────────────────────────────────────
+// Which subscription a NEW item may hang off. Sessions need credits left; items
+// don't — an item is what a session produced. So: any in-date subscription of the
+// item's own client, depleted or not.
+
+describe("itemSubscriptionProblem", () => {
+  const TODAY = "2026-09-23" // Beirut's calendar date
+  const inDateSub = { user_id: "client-1", expiry_date: "2026-10-15" }
+
+  it("accepts an in-date subscription belonging to the item's client", () => {
+    expect(itemSubscriptionProblem(inDateSub, "client-1", TODAY)).toBeNull()
+  })
+
+  it("accepts a DEPLETED subscription — the pieces from its last session still belong to it", () => {
+    // e.g. Open Studio 1h: the one session is used, the pieces made in it aren't
+    // registered yet. The rule doesn't look at sessions at all.
+    const depleted = { ...inDateSub, remaining_sessions: 0 }
+    expect(itemSubscriptionProblem(depleted, "client-1", TODAY)).toBeNull()
+  })
+
+  it("accepts a subscription on its expiry day — it's usable through that whole day", () => {
+    expect(itemSubscriptionProblem({ ...inDateSub, expiry_date: TODAY }, "client-1", TODAY)).toBeNull()
+  })
+
+  it("rejects an expired subscription", () => {
+    const problem = itemSubscriptionProblem({ ...inDateSub, expiry_date: "2026-09-22" }, "client-1", TODAY)
+    expect(problem).toMatchObject({ statusCode: 400, code: "SUB_EXPIRED" })
+  })
+
+  it("rejects another client's subscription — its clay would be deducted from the wrong person", () => {
+    const problem = itemSubscriptionProblem(inDateSub, "client-2", TODAY)
+    expect(problem).toMatchObject({ statusCode: 400, code: "SUB_CLIENT_MISMATCH" })
+  })
+
+  it("reports ownership before expiry — the more fundamental mistake", () => {
+    const problem = itemSubscriptionProblem({ ...inDateSub, expiry_date: "2020-01-01" }, "client-2", TODAY)
+    expect(problem?.code).toBe("SUB_CLIENT_MISMATCH")
+  })
+
+  it("reports a subscription that doesn't exist", () => {
+    expect(itemSubscriptionProblem(null, "client-1", TODAY)).toMatchObject({
+      statusCode: 404,
+      code: "SUB_NOT_FOUND",
+    })
   })
 })

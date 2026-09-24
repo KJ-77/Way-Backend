@@ -53,15 +53,20 @@ export const createUserPackage = async (
   // yesterday — a subscription sold at 1am would have been dated the day before.
   const purchaseDate = data.purchase_date ?? getBeirutToday()
 
-  // `$4::date + INTERVAL '2 months'` yields a timestamp; the ::date cast keeps the
-  // column a clean date. Postgres clamps month-end correctly (Jan 31 → Mar 31, and
-  // Dec 31 + 2 months → Feb 28/29), so no manual end-of-month handling is needed.
+  // How long it lasts comes from the PACKAGE (validity_days, migration 010): 60 days
+  // for most, 30 for the Open Studio Membership. Days, not months, so every client
+  // gets the same length whichever month they buy in. It's read once, here, and the
+  // resulting expiry_date is stored — so editing a package's validity later only
+  // affects subscriptions sold after the edit, never ones a client already bought.
+  //
+  // In Postgres `date + integer` is already a date (whole days), so no interval or
+  // cast is needed.
   const inserted = await executeQuery<UserPackageRow>(
     `INSERT INTO user_packages
        (user_id, package_id, remaining_sessions, remaining_weight,
         purchase_date, expiry_date, notes)
      SELECT $1, $2, p.sessions_included, p.weight_included,
-            $4::date, ($4::date + INTERVAL '2 months')::date, $3
+            $4::date, $4::date + p.validity_days, $3
      FROM packages p
      WHERE p.id = $2
      RETURNING *`,
@@ -73,7 +78,9 @@ export const createUserPackage = async (
   return getUserPackageById(inserted[0].id)
 }
 
-// Dynamic UPDATE — only touches columns present in `data`
+// Dynamic UPDATE — only touches columns present in `data`. The keys become SQL, so
+// `data` must come out of UpdateUserPackageSchema (which strips anything unknown),
+// never straight from a request body.
 export const updateUserPackage = async (
   id: number,
   data: UpdateUserPackageDto

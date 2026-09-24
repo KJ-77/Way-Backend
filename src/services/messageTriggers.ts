@@ -26,7 +26,7 @@
 import {
   getTemplateByTrigger,
   enqueueTemplateMessage,
-  hasPendingTriggerMessage,
+  supersedePendingTriggerMessages,
 } from "./messageService"
 
 /**
@@ -77,13 +77,20 @@ export async function onClientCreated(user: {
  *
  * Which stages notify is driven entirely by DATA, not by this code: the trigger key
  * is `item_stage:<stage>` and we simply look it up. Seeded templates cover
- * `item_stage:ready` and `item_stage:bisque fired`, but the studio can add, remove
- * or deactivate templates to change which stages message a client — no deploy.
+ * `item_stage:bisque fired`, `item_stage:ready` and `item_stage:picked up` (the
+ * thank-you, migration 009), but the studio can add, remove or deactivate templates
+ * to change which stages message a client — no deploy.
  *
- * Deliberately NOT fired on backward moves. An admin rewinding a piece to fix a
- * mistake is correcting the record, not making progress worth announcing — and
- * "your piece is now at the drying stage" after it was already ready would be
- * alarming. `isBackward` is supplied by the caller, which already computes it.
+ * NEWEST WINS: at most one unsent stage draft per piece, and it's always about the
+ * stage the piece is actually at. Any older unsent draft is cancelled once the piece
+ * moves on — see supersedePendingTriggerMessages for why.
+ *
+ * Deliberately never ANNOUNCES backward moves. An admin rewinding a piece to fix a
+ * mistake is correcting the record, not making progress — and "your piece is now at
+ * the drying stage" after it was already ready would be alarming. A rewind still
+ * clears the stale draft, though: a "thanks for picking it up!" drafted by a
+ * mistaken move to Picked Up must not survive the fix. `isBackward` is supplied by
+ * the caller, which already computes it.
  */
 export async function onItemStageChanged(args: {
   itemId: number
@@ -98,17 +105,27 @@ export async function onItemStageChanged(args: {
 }): Promise<void> {
   await safely(`item_stage:${args.newStage}`, async () => {
     if (args.newStage === args.previousStage) return
-    if (args.isBackward) return
 
-    const triggerEvent = `item_stage:${args.newStage}`
-    const template = await getTemplateByTrigger(triggerEvent)
-    if (!template) return
+    const triggerRef = String(args.itemId)
 
-    // Don't stack duplicate drafts for the same piece. See the doc comment on
-    // hasPendingTriggerMessage for why this checks 'pending' and not 'ever sent'.
-    if (await hasPendingTriggerMessage("item_stage", String(args.itemId))) return
+    // Rewind: announce nothing, but drop whatever was drafted for the stage we left.
+    if (args.isBackward) {
+      await supersedePendingTriggerMessages("item_stage", triggerRef)
+      return
+    }
 
-    await enqueueTemplateMessage({
+    const template = await getTemplateByTrigger(`item_stage:${args.newStage}`)
+    if (!template) {
+      // Nothing to say about the new stage, but anything unsent about the old one is
+      // stale now — "ready for pickup!" about a piece that was just discarded.
+      await supersedePendingTriggerMessages("item_stage", triggerRef)
+      return
+    }
+
+    // Draft FIRST, then cancel the older drafts. If drafting fails (no phone, a DB
+    // hiccup), the old draft survives and staff still see something in the queue to
+    // check — rather than the piece silently having nothing at all.
+    const draft = await enqueueTemplateMessage({
       userId: args.userId,
       templateId: template.id,
       variables: {
@@ -117,9 +134,10 @@ export async function onItemStageChanged(args: {
         "3": args.newStage,
       },
       trigger: "item_stage",
-      triggerRef: String(args.itemId),
+      triggerRef,
       createdBy: null,
     })
+    await supersedePendingTriggerMessages("item_stage", triggerRef, draft.id)
   })
 }
 

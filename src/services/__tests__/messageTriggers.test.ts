@@ -5,21 +5,25 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 vi.mock("../messageService", () => ({
   getTemplateByTrigger: vi.fn(),
   enqueueTemplateMessage: vi.fn(),
-  hasPendingTriggerMessage: vi.fn(),
+  supersedePendingTriggerMessages: vi.fn(),
 }))
 
 import { onClientCreated, onItemStageChanged } from "../messageTriggers"
 import {
   getTemplateByTrigger,
   enqueueTemplateMessage,
-  hasPendingTriggerMessage,
+  supersedePendingTriggerMessages,
 } from "../messageService"
 
 const mockTemplate = (id: number) => ({ id, name: "t", body: "b" })
 
+// The id the freshly drafted message gets — "newest wins" cancels drafts older than it.
+const NEW_DRAFT_ID = 99
+
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(hasPendingTriggerMessage).mockResolvedValue(false)
+  vi.mocked(enqueueTemplateMessage).mockResolvedValue({ id: NEW_DRAFT_ID } as never)
+  vi.mocked(supersedePendingTriggerMessages).mockResolvedValue(0)
   // Silence the expected error logging in the no-throw tests.
   vi.spyOn(console, "error").mockImplementation(() => {})
 })
@@ -108,41 +112,91 @@ describe("onItemStageChanged", () => {
     )
   })
 
-  it("does not fire on a backward stage change", async () => {
-    // An admin rewinding to fix a mistake isn't progress worth announcing, and
-    // "your piece is now at the drying stage" after it was ready would alarm people.
-    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
+  it("drafts the thank-you when a piece is picked up", async () => {
+    // The 'picked up' template (migration 009) is just data — no code knows about it.
+    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(5) as never)
 
-    await onItemStageChanged(stageArgs({ previousStage: "ready", newStage: "drying", isBackward: true }))
+    await onItemStageChanged(stageArgs({ previousStage: "ready", newStage: "picked up" }))
 
-    expect(enqueueTemplateMessage).not.toHaveBeenCalled()
+    expect(getTemplateByTrigger).toHaveBeenCalledWith("item_stage:picked up")
+    expect(enqueueTemplateMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateId: 5,
+        variables: expect.objectContaining({ "3": "picked up" }),
+        triggerRef: "42",
+      }),
+    )
   })
 
-  it("does not fire when the stage didn't actually change", async () => {
+  it("drafts even while an older draft for the piece is still pending — newest wins", async () => {
+    // The bug this replaced: an unsent "ready for pickup" draft used to BLOCK the
+    // thank-you, and the stale "ready" draft stayed in the queue. Now the new draft
+    // is created and the older ones are cancelled.
+    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(5) as never)
+    vi.mocked(supersedePendingTriggerMessages).mockResolvedValue(1) // the stale "ready" draft
+
+    await onItemStageChanged(stageArgs({ previousStage: "ready", newStage: "picked up" }))
+
+    expect(enqueueTemplateMessage).toHaveBeenCalledTimes(1)
+    // Only drafts OLDER than the new one are cancelled, so the new one survives.
+    expect(supersedePendingTriggerMessages).toHaveBeenCalledWith("item_stage", "42", NEW_DRAFT_ID)
+  })
+
+  it("cancels the old drafts only AFTER the new one exists", async () => {
+    // Draft-then-cancel: a failure in between leaves the old draft visible to staff
+    // instead of leaving the piece with nothing in the queue.
+    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
+
+    await onItemStageChanged(stageArgs())
+
+    const drafted = vi.mocked(enqueueTemplateMessage).mock.invocationCallOrder[0]
+    const cancelled = vi.mocked(supersedePendingTriggerMessages).mock.invocationCallOrder[0]
+    expect(drafted).toBeLessThan(cancelled)
+  })
+
+  it("keeps the old draft when drafting the new one fails", async () => {
+    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
+    vi.mocked(enqueueTemplateMessage).mockRejectedValue(
+      Object.assign(new Error("no phone"), { statusCode: 400, code: "NO_PHONE" }),
+    )
+
+    await expect(onItemStageChanged(stageArgs())).resolves.toBeUndefined()
+    expect(supersedePendingTriggerMessages).not.toHaveBeenCalled()
+  })
+
+  it("announces nothing on a rewind, but clears the stale draft", async () => {
+    // An admin rewinding to fix a mistake isn't progress worth announcing, and
+    // "your piece is now at the drying stage" after it was ready would alarm people.
+    // But a draft written for the stage the piece just LEFT is wrong now — e.g. a
+    // "thanks for picking it up!" drafted by a mistaken move to Picked Up.
+    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
+
+    await onItemStageChanged(stageArgs({ previousStage: "picked up", newStage: "ready", isBackward: true }))
+
+    expect(enqueueTemplateMessage).not.toHaveBeenCalled()
+    expect(getTemplateByTrigger).not.toHaveBeenCalled()
+    // No id: nothing new was drafted, so every unsent draft for the piece goes.
+    expect(supersedePendingTriggerMessages).toHaveBeenCalledWith("item_stage", "42")
+  })
+
+  it("does nothing at all when the stage didn't actually change", async () => {
     vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
 
     await onItemStageChanged(stageArgs({ previousStage: "ready", newStage: "ready" }))
 
     expect(enqueueTemplateMessage).not.toHaveBeenCalled()
+    // The existing draft still describes the current stage — leave it alone.
+    expect(supersedePendingTriggerMessages).not.toHaveBeenCalled()
   })
 
-  it("does not fire for a stage with no template", async () => {
+  it("drafts nothing for a stage with no template, but clears the stale draft", async () => {
+    // e.g. ready → discarded: "ready for pickup!" must not go out about a discarded piece.
     vi.mocked(getTemplateByTrigger).mockResolvedValue(null)
 
-    await onItemStageChanged(stageArgs({ newStage: "drying" }))
+    await onItemStageChanged(stageArgs({ previousStage: "ready", newStage: "discarded" }))
 
     expect(enqueueTemplateMessage).not.toHaveBeenCalled()
-  })
-
-  it("does not stack a second draft while one is still pending", async () => {
-    // Toggling a piece back and forth before anyone approves should leave ONE draft.
-    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
-    vi.mocked(hasPendingTriggerMessage).mockResolvedValue(true)
-
-    await onItemStageChanged(stageArgs())
-
-    expect(hasPendingTriggerMessage).toHaveBeenCalledWith("item_stage", "42")
-    expect(enqueueTemplateMessage).not.toHaveBeenCalled()
+    expect(supersedePendingTriggerMessages).toHaveBeenCalledWith("item_stage", "42")
   })
 
   it("falls back to the clay type when the piece has no description", async () => {
@@ -183,11 +237,22 @@ describe("onItemStageChanged", () => {
     )
   })
 
-  // ══ THE LOAD-BEARING TEST ══
+  // ══ THE LOAD-BEARING TESTS ══
   // Advancing an item must succeed even if messaging is broken.
   it("never throws, even when the messaging layer fails", async () => {
     vi.mocked(getTemplateByTrigger).mockRejectedValue(new Error("database is on fire"))
 
     await expect(onItemStageChanged(stageArgs())).resolves.toBeUndefined()
+  })
+
+  it("never throws when cancelling stale drafts fails", async () => {
+    vi.mocked(getTemplateByTrigger).mockResolvedValue(mockTemplate(3) as never)
+    vi.mocked(supersedePendingTriggerMessages).mockRejectedValue(new Error("lock timeout"))
+
+    await expect(onItemStageChanged(stageArgs())).resolves.toBeUndefined()
+    // …and a failing cleanup on a rewind is swallowed the same way.
+    await expect(
+      onItemStageChanged(stageArgs({ previousStage: "ready", newStage: "drying", isBackward: true })),
+    ).resolves.toBeUndefined()
   })
 })

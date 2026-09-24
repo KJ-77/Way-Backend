@@ -1,4 +1,5 @@
 import { pool, executeQuery } from "../lib/db"
+import { getBeirutToday } from "../lib/time"
 import type { ItemJoined, CreateItemDto, UpdateItemDto, ItemStage, ItemSection } from "../lib/types"
 
 // JOIN users to include client name alongside item data
@@ -24,7 +25,94 @@ export const getItemById = async (id: number): Promise<ItemJoined | null> => {
   return rows[0] ?? null
 }
 
+// ── Which subscription can a new item hang off? ──
+// A Studio item is a piece made during a session, so it belongs to that session's
+// subscription. The rule is deliberately NOT "the subscription is active":
+//
+//  • Sessions need credits left; items don't. An item is what a session PRODUCED.
+//    A depleted Open Studio 1h has used its hour, but the pieces made in that hour
+//    are still its pieces. Items only ever touch remaining_weight, and weight may go
+//    negative (the client owes for extra clay), so a depleted sub takes new items
+//    without changing any accounting rule. Booking stays gated on credits, untouched.
+//  • It must still be in date. After expiry, a new piece can't have come from it —
+//    it would be spending leftover clay from a term that's over.
+//  • It must belong to the item's own client, or the piece's clay would be deducted
+//    from somebody else's balance.
+//
+// Way-Admin's create dialog applies the same rule (src/lib/subscriptions.ts) so staff
+// only see eligible subscriptions. That's convenience; this is the enforcement.
+
+export interface LinkedSubscription {
+  user_id: string
+  expiry_date: string // "YYYY-MM-DD"
+}
+
+export interface SubscriptionProblem {
+  statusCode: number
+  code: string
+  message: string
+}
+
+/**
+ * Why `sub` can't take a new item for `itemUserId`, or null when it can.
+ * Pure, so the rule is unit-tested without a database.
+ *
+ * "Expired" is judged by Beirut's calendar (`today` = getBeirutToday()): a
+ * subscription stays usable through its whole expiry day in the studio, whatever
+ * the UTC date is.
+ */
+export function itemSubscriptionProblem(
+  sub: LinkedSubscription | null,
+  itemUserId: string,
+  today: string,
+): SubscriptionProblem | null {
+  if (!sub) {
+    return {
+      statusCode: 404,
+      code: "SUB_NOT_FOUND",
+      message: "That subscription doesn't exist anymore.",
+    }
+  }
+  if (sub.user_id !== itemUserId) {
+    return {
+      statusCode: 400,
+      code: "SUB_CLIENT_MISMATCH",
+      message: "That subscription belongs to a different client.",
+    }
+  }
+  // Plain string comparison is safe: both sides are zero-padded YYYY-MM-DD.
+  if (sub.expiry_date < today) {
+    return {
+      statusCode: 400,
+      code: "SUB_EXPIRED",
+      message: "That subscription has expired, so new items can't be added to it.",
+    }
+  }
+  return null
+}
+
 export const createItem = async (data: CreateItemDto): Promise<ItemJoined> => {
+  // Studio items carry a subscription (the schema guarantees one for Studio and none
+  // for PC). Make sure it's one this piece can actually belong to — see above.
+  if (data.user_package_id != null) {
+    const subs = await executeQuery<LinkedSubscription>(
+      // to_char, not the raw DATE: pg would hand a DATE back as a JS Date at midnight
+      // in the Lambda's timezone, and the comparison would quietly depend on it.
+      `SELECT user_id, to_char(expiry_date, 'YYYY-MM-DD') AS expiry_date
+         FROM user_packages
+        WHERE id = $1`,
+      [data.user_package_id],
+    )
+    const problem = itemSubscriptionProblem(subs[0] ?? null, data.user_id, getBeirutToday())
+    if (problem) {
+      // statusCode + SCREAMING_SNAKE code → handleError forwards both to the client.
+      throw Object.assign(new Error(problem.message), {
+        statusCode: problem.statusCode,
+        code: problem.code,
+      })
+    }
+  }
+
   const rows = await executeQuery<{ id: number }>(
     `INSERT INTO items (user_id, user_package_id, stage, section, description, clay_type)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,

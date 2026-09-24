@@ -269,36 +269,52 @@ const getMessageById = async (id: number): Promise<MessageJoined | null> => {
 }
 
 /**
- * True when an identical automatic draft is ALREADY sitting in the queue unapproved.
+ * "Newest wins": cancels the UNSENT automatic drafts about one subject — e.g. one
+ * piece — and returns how many it cancelled.
  *
- * Used by the trigger layer to avoid stacking duplicates. The semantics matter:
- * this checks only for `pending_approval`, deliberately NOT for messages already
- * sent. So —
+ * A stage draft describes the stage it was written for. Once the piece moves on,
+ * an unsent one is stale: "your piece is ready for pickup!" reaching a client who
+ * collected it yesterday. So when a piece changes stage, the trigger layer drafts
+ * the new message (if the new stage has a template) and cancels the older ones.
+ * Push notifications solve the same problem with collapse keys (APNs
+ * `apns-collapse-id`, FCM `collapse_key`): a newer notification about the same
+ * thing replaces one that hasn't been delivered yet.
  *
- *   • Nudging an item's stage back and forth before anyone approves the first
- *     draft leaves ONE draft, not five.
- *   • But if the "ready for pickup" message was already sent, and the piece later
- *     goes back to the kiln and returns to "ready", a NEW message is drafted. That's
- *     correct: the client genuinely needs telling again.
+ * This replaced a guard that refused to draft while ANY draft for the piece was
+ * pending. That kept the queue to one draft per piece, but the one it kept was the
+ * OLD one — so the "picked up" thank-you was silently skipped whenever the "ready"
+ * draft hadn't been sent yet, and the stale "ready" draft stayed behind.
  *
- * Scoped by trigger + trigger_ref (the item id), so two different pieces belonging
- * to the same client never suppress each other.
+ * • `olderThanId` spares the draft that was just created, and anything newer. With
+ *   two concurrent stage changes, each cancels only drafts older than its own, so
+ *   the newest always survives — they can't cancel each other down to nothing.
+ * • Only 'pending_approval' rows are touched. 'queued' may already be on its way
+ *   to the client (staff opened WhatsApp), and calling it cancelled would be a lie.
+ *   If staff are mid-handoff, the row lock decides: their handoff claims it first
+ *   and it goes out, or this cancel lands first and their handoff gets the normal
+ *   409 ALREADY_PROCESSED.
+ * • Cancelled, not deleted (the history keeps it) and not re-rendered in place
+ *   (someone may be reading the old text in the queue, or have it on their clipboard).
+ *
+ * Index: messages_pending_idx — its predicate (pending_approval + outbound) is part
+ * of this WHERE, and pending drafts are a tiny set by design.
  */
-export const hasPendingTriggerMessage = async (
+export const supersedePendingTriggerMessages = async (
   trigger: string,
   triggerRef: string,
-): Promise<boolean> => {
-  const rows = await executeQuery<{ exists: boolean }>(
-    `SELECT EXISTS(
-       SELECT 1 FROM messages
-       WHERE status = 'pending_approval'
-         AND direction = 'outbound'
-         AND trigger = $1
-         AND trigger_ref = $2
-     ) AS exists`,
-    [trigger, triggerRef],
+  olderThanId?: number,
+): Promise<number> => {
+  const rows = await executeQuery<{ id: number }>(
+    `UPDATE messages SET status = 'cancelled'
+      WHERE status = 'pending_approval'
+        AND direction = 'outbound'
+        AND trigger = $1
+        AND trigger_ref = $2
+        AND ($3::bigint IS NULL OR id < $3::bigint)
+      RETURNING id`,
+    [trigger, triggerRef, olderThanId ?? null],
   )
-  return rows[0]?.exists === true
+  return rows.length
 }
 
 // ── Drafting ────────────────────────────────────────────────────────────────

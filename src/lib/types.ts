@@ -59,6 +59,11 @@ export interface Package {
   sessions_included: number
   weight_included: number
   price: number
+  notes: string | null
+  // How many DAYS a subscription to this package lasts (migration 010). Read ONCE, when
+  // a subscription is created — the resulting expiry_date is stored on the subscription,
+  // so editing this later never changes subscriptions that were already sold.
+  validity_days: number
 }
 
 // Package + joined class_type name — the shape read endpoints return.
@@ -119,9 +124,11 @@ import type { CreateUserSchema, UpdateUserSchema } from "./schemas/user.schema"
 export type CreateUserDto = z.infer<typeof CreateUserSchema>
 export type UpdateUserDto = z.infer<typeof UpdateUserSchema>
 
-// class_type_id required on create (packages must belong to a class).
-export type CreatePackageDto = Omit<Package, "id">
-export type UpdatePackageDto = Partial<CreatePackageDto>
+// Package DTOs are derived from Zod schemas (see schemas/package.schema.ts).
+// class_type_id is required on create (packages must belong to a class).
+import type { CreatePackageSchema, UpdatePackageSchema } from "./schemas/package.schema"
+export type CreatePackageDto = z.infer<typeof CreatePackageSchema>
+export type UpdatePackageDto = z.infer<typeof UpdatePackageSchema>
 
 // CreateSessionDto is derived from the Zod schema; see schemas/session.schema.ts.
 import type { CreateSessionSchema, UpdateSessionSchema } from "./schemas/session.schema"
@@ -171,15 +178,14 @@ export interface CreateUserPackageDto {
   purchase_date?: string
 }
 
-export interface UpdateUserPackageDto {
-  remaining_sessions?: number
-  remaining_weight?: number
-  expiry_date?: string
-  notes?: string | null
-}
+// Derived from the Zod schema, which is also the column whitelist for the UPDATE.
+import type { UpdateUserPackageSchema } from "./schemas/userPackage.schema"
+export type UpdateUserPackageDto = z.infer<typeof UpdateUserPackageSchema>
 
-export type CreateTutorDto = Omit<Tutor, "id">
-export type UpdateTutorDto = Partial<CreateTutorDto>
+// Derived from the Zod schemas, which are also the column whitelist for the UPDATE.
+import type { CreateTutorSchema, UpdateTutorSchema } from "./schemas/tutor.schema"
+export type CreateTutorDto = z.infer<typeof CreateTutorSchema>
+export type UpdateTutorDto = z.infer<typeof UpdateTutorSchema>
 
 // ── Schedule ──
 
@@ -287,6 +293,11 @@ export interface Item {
   final_weight: number | null
   created_at: string
   updated_at: string
+  // When the item entered its CURRENT stage (migration 011). Kept by a DB trigger
+  // that fires only when `stage` actually changes, so unlike updated_at it doesn't
+  // move when someone edits the description. Groundwork for "waiting in Ready for
+  // 14+ days" reminders; nothing reads it yet.
+  stage_changed_at: string
 }
 
 // Joined with user name for API response

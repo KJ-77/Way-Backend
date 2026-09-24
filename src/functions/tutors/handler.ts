@@ -1,10 +1,21 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import type { CreateTutorDto, UpdateTutorDto } from "../../lib/types"
+import { getAuthContext, requireRole } from "../../lib/auth"
+import { CreateTutorSchema, UpdateTutorSchema } from "../../lib/schemas/tutor.schema"
 import * as tutorService from "../../services/tutorService"
 
-export const getTutors = async (): Promise<APIGatewayProxyResultV2> => {
+// Staff-only — reads included. The authorizer accepts tokens from BOTH Cognito
+// pools, and anyone can mint a client token through the public POST /auth/signup,
+// so "has a valid token" is not "is staff". These routes used to check nothing:
+// any client could create, edit and delete tutors, and read their phone numbers,
+// emails and hourly rates. Way-Client never calls /tutors, so nothing loses access.
+const TUTOR_ROLES = ["admin", "studio-manager"]
+
+export const getTutors = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    if (denied) return denied
+
     const tutors = await tutorService.getAllTutors()
     return createResponse(200, tutors)
   } catch (err) {
@@ -14,6 +25,9 @@ export const getTutors = async (): Promise<APIGatewayProxyResultV2> => {
 
 export const getTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid tutor ID" })
 
@@ -27,10 +41,19 @@ export const getTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewa
 
 export const createTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const data = parseBody<CreateTutorDto>(event.body)
-    if (!data.full_name) return createResponse(400, { error: "full_name is required" })
+    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    if (denied) return denied
 
-    const tutor = await tutorService.createTutor(data)
+    const result = CreateTutorSchema.safeParse(parseBody(event.body))
+    if (!result.success) {
+      return createResponse(400, {
+        error: "Validation failed",
+        code: "VALIDATION_FAILED",
+        issues: result.error.issues,
+      })
+    }
+
+    const tutor = await tutorService.createTutor(result.data)
     return createResponse(201, tutor)
   } catch (err) {
     return handleError(err)
@@ -39,11 +62,24 @@ export const createTutor = async (event: APIGatewayProxyEventV2): Promise<APIGat
 
 export const updateTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid tutor ID" })
 
-    const data = parseBody<UpdateTutorDto>(event.body)
-    const tutor = await tutorService.updateTutor(id, data)
+    // The schema is also the column whitelist — the service turns the object's keys
+    // into the SET clause, so only keys that survive parsing may reach it.
+    const result = UpdateTutorSchema.safeParse(parseBody(event.body))
+    if (!result.success) {
+      return createResponse(400, {
+        error: "Validation failed",
+        code: "VALIDATION_FAILED",
+        issues: result.error.issues,
+      })
+    }
+
+    const tutor = await tutorService.updateTutor(id, result.data)
     if (!tutor) return createResponse(404, { error: "Tutor not found" })
     return createResponse(200, tutor)
   } catch (err) {
@@ -53,6 +89,9 @@ export const updateTutor = async (event: APIGatewayProxyEventV2): Promise<APIGat
 
 export const deleteTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    if (denied) return denied
+
     const id = Number(getPathParam(event, "id"))
     if (!id) return createResponse(400, { error: "Invalid tutor ID" })
 
