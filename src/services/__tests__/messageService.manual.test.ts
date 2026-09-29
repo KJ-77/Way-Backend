@@ -20,6 +20,8 @@ import {
   getUnconfirmed,
   getPendingQueue,
   cancelMessage,
+  getConversations,
+  getConversationMessages,
 } from "../messageService"
 
 const query = vi.mocked(executeQuery)
@@ -161,6 +163,51 @@ describe("resolveUnconfirmed — not_sent", () => {
     const result = await resolveUnconfirmed(7, "sent")
     expect(result.status).toBe("sent")
     expect(query.mock.calls[0][1]).toEqual([7, "sent"])
+  })
+
+  it("casts $2 to message_status everywhere it's used", async () => {
+    // Regression: `status = $2` deduces message_status but a bare `$2 = 'sent'`
+    // deduces text, and Postgres refuses a parameter with two types (42P08) — so
+    // "Yes, I sent it" failed on every click in production. The mock can't parse
+    // SQL, so pin the shape instead: no bare $2 may remain.
+    query
+      .mockResolvedValueOnce([{ id: 7 }])
+      .mockResolvedValueOnce([message({ status: "sent" })])
+
+    await resolveUnconfirmed(7, "sent")
+    const sql = sqlOf(0)
+    expect(sql.match(/\$2::message_status/g)).toHaveLength(2)
+    expect(sql).not.toMatch(/\$2(?!::message_status)/)
+  })
+})
+
+describe("conversation history — only messages that actually went out", () => {
+  // A conversation row exists from the first DRAFT, so History used to list clients
+  // (and preview drafts) for messages that were never sent, discarded, or still
+  // awaiting "Did these go out?". History is now sent/delivered/read + inbound only.
+  const HISTORY = /\(m\.direction = 'inbound' OR m\.status IN \('sent', 'delivered', 'read'\)\)/
+
+  it("the thread keeps only history messages, ordered by when they went out", async () => {
+    query.mockResolvedValueOnce([])
+    await getConversationMessages(3)
+
+    const sql = sqlOf(0)
+    expect(sql).toMatch(HISTORY)
+    expect(sql).toMatch(/ORDER BY COALESCE\(m\.sent_at, m\.created_at\) ASC, m\.id ASC/)
+    expect(query.mock.calls[0][1]).toEqual([3])
+  })
+
+  it("the list drops conversations with no history and previews only history", async () => {
+    query.mockResolvedValueOnce([])
+    await getConversations()
+
+    const sql = sqlOf(0)
+    // The preview comes from the filtered set…
+    expect(sql).toMatch(HISTORY)
+    // …through an INNER lateral join, which is what drops draft-only conversations.
+    expect(sql).toMatch(/\n\s*JOIN LATERAL \(\s*SELECT m\.body/)
+    expect(sql).not.toMatch(/LEFT JOIN LATERAL \(\s*SELECT m\.body/)
+    expect(sql).toMatch(/ORDER BY last\.happened_at DESC, c\.id DESC/)
   })
 })
 

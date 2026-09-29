@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import { CreateUserSchema, UpdateUserSchema } from "../../lib/schemas/user.schema"
 import { invokeLambda } from "../../lib/lambda"
 import * as cognito from "../../lib/cognito"
@@ -13,7 +13,16 @@ const DB_FUNCTION = process.env.USER_DB_FUNCTION!
 // List filters out soft-deleted users by default. Pass ?include_deleted=true to see them all
 // (used by the admin UI's "Show deleted" toggle). Single-user GET always returns the row
 // regardless of is_active so the user-detail page can render a "Deleted" banner.
+//
+// ⚠️ Staff-only. The authorizer accepts client-pool tokens too, and anyone can mint one
+// through the public POST /auth/signup — so until 2026-09-25, when this check was
+// added, any signed-up client could download every client's name, phone, email, DOB
+// and notes. Way-Client never calls /users; clients read their own data through the
+// ownership-scoped /sessions, /items and /user-packages routes.
 export const getUsers = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  const denied = requirePermission(getAuthContext(event), "clients:read")
+  if (denied) return denied
+
   // Dynamic import so DB deps only load when this VPC handler runs
   const userService = await import("../../services/userService")
 
@@ -36,7 +45,7 @@ export const getUsers = async (event: APIGatewayProxyEventV2): Promise<APIGatewa
 export const createUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin", "studio-manager")
+    const denied = requirePermission(auth, "clients:create")
     if (denied) return denied
 
     const raw = parseBody(event.body)
@@ -114,7 +123,7 @@ export const createUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
 export const updateUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin", "studio-manager")
+    const denied = requirePermission(auth, "clients:update")
     if (denied) return denied
 
     const id = getPathParam(event, "id")
@@ -164,7 +173,7 @@ export const updateUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
 export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin", "studio-manager")
+    const denied = requirePermission(auth, "clients:delete")
     if (denied) return denied
 
     const id = getPathParam(event, "id")
@@ -225,11 +234,11 @@ export const deleteUser = async (event: APIGatewayProxyEventV2): Promise<APIGate
 // Generates a temporary password, sets it on the client's Cognito user with
 // Permanent=false (forces FORCE_CHANGE_PASSWORD on next login), and revokes refresh
 // tokens. Returns the temp password so the admin can read it out to the client.
-// Allowed for admin + studio-manager — same auth surface as createUser/deleteUser.
+// Needs "clients:update" — admins and studio managers, not agents.
 export const resetUserPassword = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin", "studio-manager")
+    const denied = requirePermission(auth, "clients:update")
     if (denied) return denied
 
     const id = getPathParam(event, "id")
@@ -279,7 +288,7 @@ export const resetUserPassword = async (event: APIGatewayProxyEventV2): Promise<
 export const restoreUser = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin", "studio-manager")
+    const denied = requirePermission(auth, "clients:restore")
     if (denied) return denied
 
     const id = getPathParam(event, "id")

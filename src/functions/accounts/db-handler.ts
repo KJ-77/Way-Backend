@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { executeQuery, pool } from "../../lib/db"
 import { createResponse, parseBody, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import type { Account } from "../../lib/types"
 
 // Payload shape for direct Lambda invocations from the Cognito-facing handlers
@@ -72,7 +72,7 @@ export const accountDbOps = async (event: unknown): Promise<unknown> => {
 export const syncAccount = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin")
+    const denied = requirePermission(auth, "accounts:manage")
     if (denied) return denied
 
     const body = parseBody<{ id: string; email: string; full_name: string; phone?: string; role: string }>(event.body)

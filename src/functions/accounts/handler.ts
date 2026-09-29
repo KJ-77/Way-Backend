@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import { CreateAccountSchema, UpdateAccountSchema } from "../../lib/schemas/account.schema"
 import { invokeLambda } from "../../lib/lambda"
 import * as cognito from "../../lib/cognito"
@@ -16,7 +16,7 @@ export const getAccounts = async (event: APIGatewayProxyEventV2): Promise<APIGat
 
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin")
+    const denied = requirePermission(auth, "accounts:manage")
     if (denied) return denied
 
     const id = getPathParam(event, "id")
@@ -36,7 +36,7 @@ export const getAccounts = async (event: APIGatewayProxyEventV2): Promise<APIGat
 export const createAccount = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin")
+    const denied = requirePermission(auth, "accounts:manage")
     if (denied) return denied
 
     const raw = parseBody(event.body)
@@ -81,7 +81,7 @@ export const createAccount = async (event: APIGatewayProxyEventV2): Promise<APIG
 export const updateAccount = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin")
+    const denied = requirePermission(auth, "accounts:manage")
     if (denied) return denied
 
     const id = getPathParam(event, "id")
@@ -145,7 +145,7 @@ export const updateAccount = async (event: APIGatewayProxyEventV2): Promise<APIG
 export const resetAccountPassword = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin")
+    const denied = requirePermission(auth, "accounts:manage")
     if (denied) return denied
 
     const id = getPathParam(event, "id")
@@ -174,7 +174,7 @@ export const resetAccountPassword = async (event: APIGatewayProxyEventV2): Promi
 export const deleteAccount = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, "admin")
+    const denied = requirePermission(auth, "accounts:manage")
     if (denied) return denied
 
     const id = getPathParam(event, "id")

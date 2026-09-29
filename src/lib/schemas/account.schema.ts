@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { ROLES } from "../permissions"
 
 // Optional phone — when provided, strip whitespace so stored form matches Cognito and
 // any UNIQUE constraint on the column actually catches duplicates.
@@ -8,11 +9,12 @@ export const CreateAccountSchema = z.object({
   email: z.string().email(),
   full_name: z.string().min(1),
   phone: optionalPhone,
-  role: z.enum(["admin", "studio-manager"]),
+  // Every role from lib/permissions.ts — a new role is accepted here automatically.
+  role: z.enum(ROLES),
 })
 
 export const UpdateAccountSchema = z.object({
   full_name: z.string().min(1).optional(),
   phone: optionalPhone,
-  role: z.enum(["admin", "studio-manager"]).optional(),
+  role: z.enum(ROLES).optional(),
 })

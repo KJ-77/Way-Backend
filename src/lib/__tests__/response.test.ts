@@ -19,7 +19,7 @@
 
 import { describe, it, expect, vi } from "vitest"
 import type { APIGatewayProxyStructuredResultV2 } from "aws-lambda"
-import { createResponse, parseBody, handleError } from "../response"
+import { createResponse, parseBody, handleError, SERVER_ERROR_MESSAGE } from "../response"
 
 // ── createResponse ──────────────────────────────────────────────────────────
 // This function wraps data into the shape API Gateway expects:
@@ -130,6 +130,16 @@ describe("handleError", () => {
     const result = handleError(genericError)
     expect(result.statusCode).toBe(500)
     expect(JSON.parse(result.body as string).error).toBe("Server error")
+  })
+
+  it("never echoes the raw error message on a 500", () => {
+    // A pg error names tables and columns; an SDK error can carry hostnames. They
+    // belong in CloudWatch, not in a response anyone can read.
+    const pgError = Object.assign(new Error('column "status" does not exist'), { code: "42703" })
+    const result = handleError(pgError) as APIGatewayProxyStructuredResultV2
+    const body = JSON.parse(result.body as string)
+    expect(body.message).toBe(SERVER_ERROR_MESSAGE)
+    expect(JSON.stringify(body)).not.toContain("status")
   })
 
   // ── Error code taxonomy ────────────────────────────────────────────────────

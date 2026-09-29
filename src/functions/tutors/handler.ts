@@ -1,19 +1,19 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import { CreateTutorSchema, UpdateTutorSchema } from "../../lib/schemas/tutor.schema"
 import * as tutorService from "../../services/tutorService"
 
-// Staff-only — reads included. The authorizer accepts tokens from BOTH Cognito
-// pools, and anyone can mint a client token through the public POST /auth/signup,
-// so "has a valid token" is not "is staff". These routes used to check nothing:
-// any client could create, edit and delete tutors, and read their phone numbers,
-// emails and hourly rates. Way-Client never calls /tutors, so nothing loses access.
-const TUTOR_ROLES = ["admin", "studio-manager"]
+// Staff-only — reads included ("tutors:read", every staff role; writes per
+// lib/permissions.ts). The authorizer accepts tokens from BOTH Cognito pools, and
+// anyone can mint a client token through the public POST /auth/signup, so "has a
+// valid token" is not "is staff". These routes used to check nothing: any client
+// could create, edit and delete tutors, and read their phone numbers, emails and
+// hourly rates. Way-Client never calls /tutors, so nothing loses access.
 
 export const getTutors = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    const denied = requirePermission(getAuthContext(event), "tutors:read")
     if (denied) return denied
 
     const tutors = await tutorService.getAllTutors()
@@ -25,7 +25,7 @@ export const getTutors = async (event: APIGatewayProxyEventV2): Promise<APIGatew
 
 export const getTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    const denied = requirePermission(getAuthContext(event), "tutors:read")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -41,7 +41,7 @@ export const getTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewa
 
 export const createTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    const denied = requirePermission(getAuthContext(event), "tutors:create")
     if (denied) return denied
 
     const result = CreateTutorSchema.safeParse(parseBody(event.body))
@@ -62,7 +62,7 @@ export const createTutor = async (event: APIGatewayProxyEventV2): Promise<APIGat
 
 export const updateTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    const denied = requirePermission(getAuthContext(event), "tutors:update")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -89,7 +89,7 @@ export const updateTutor = async (event: APIGatewayProxyEventV2): Promise<APIGat
 
 export const deleteTutor = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...TUTOR_ROLES)
+    const denied = requirePermission(getAuthContext(event), "tutors:delete")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))

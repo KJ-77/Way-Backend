@@ -1,3 +1,5 @@
+import type { Role } from "./permissions"
+
 // ── Enums ──
 
 export type Gender = "Male" | "Female"
@@ -311,7 +313,8 @@ export type UpdateItemDto = z.infer<typeof UpdateItemSchema>
 
 // ── Accounts ──
 
-export type AccountRole = "admin" | "studio-manager"
+// Defined once, in lib/permissions.ts, next to what each role may do.
+export type AccountRole = Role
 
 export interface Account {
   id: string // cognito_sub

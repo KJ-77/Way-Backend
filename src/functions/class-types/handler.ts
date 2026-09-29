@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requirePermission } from "../../lib/auth"
 import {
   CreateClassTypeSchema,
   UpdateClassTypeSchema,
@@ -9,11 +9,10 @@ import * as classTypeService from "../../services/classTypeService"
 
 // Reads: any logged-in user. The Way-Client booking flow reads class_types to
 // resolve display names + eligibility, and the Way-Admin package/slot forms
-// need the list for their <Select> pickers (studio managers included).
-// Writes: admin ONLY. Class types are load-bearing business config — every
-// package and every schedule slot FKs into this table. A rename or a wrongly
-// added row cascades everywhere, so mutation is kept off studio managers' hands.
-const CLASS_TYPE_WRITE_ROLES = ["admin"] as const
+// need the list for their <Select> pickers (every staff role included).
+// Writes: "class-types:manage" — admin only (lib/permissions.ts). Class types are
+// load-bearing business config — every package and every schedule slot FKs into
+// this table, so a rename or a wrongly added row cascades everywhere.
 
 // Bridge for service-layer businessError() throws (statusCode + code
 // attached). Same pattern used in sessions/handler.ts.
@@ -57,7 +56,7 @@ export const getClassType = async (event: APIGatewayProxyEventV2): Promise<APIGa
 
 export const createClassType = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLASS_TYPE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "class-types:manage")
     if (denied) return denied
 
     const raw = parseBody(event.body)
@@ -77,7 +76,7 @@ export const createClassType = async (event: APIGatewayProxyEventV2): Promise<AP
 
 export const updateClassType = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLASS_TYPE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "class-types:manage")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -101,7 +100,7 @@ export const updateClassType = async (event: APIGatewayProxyEventV2): Promise<AP
 
 export const deleteClassType = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLASS_TYPE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "class-types:manage")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))

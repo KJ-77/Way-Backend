@@ -1,12 +1,12 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { z } from "zod"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requirePermission } from "../../lib/auth"
 import * as clayTypeService from "../../services/clayTypeService"
 
 // Reads are open to any authenticated user — the items create/edit dialog needs the list.
-// Mutations are admin-only (clay-types schema affects every item; studio managers can't change it).
-const CLAY_TYPE_WRITE_ROLES = ["admin"]
+// Mutations need "clay-types:manage" — admin only (lib/permissions.ts): the list
+// affects every item.
 
 const ClayTypeNameSchema = z.object({
   name: z.string().min(1, "name is required").max(255, "name must be <= 255 chars"),
@@ -29,7 +29,7 @@ export const getClayTypes = async (event: APIGatewayProxyEventV2): Promise<APIGa
 
 export const createClayType = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLAY_TYPE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "clay-types:manage")
     if (denied) return denied
 
     const raw = parseBody(event.body)
@@ -48,7 +48,7 @@ export const createClayType = async (event: APIGatewayProxyEventV2): Promise<API
 // We re-point items.clay_type rows along the way so historical data stays accurate.
 export const renameClayType = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLAY_TYPE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "clay-types:manage")
     if (denied) return denied
 
     const oldName = getPathParam(event, "name")
@@ -73,7 +73,7 @@ export const renameClayType = async (event: APIGatewayProxyEventV2): Promise<API
 
 export const deleteClayType = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLAY_TYPE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "clay-types:manage")
     if (denied) return denied
 
     const name = getPathParam(event, "name")

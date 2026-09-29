@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import { CreateSessionSchema, UpdateSessionSchema } from "../../lib/schemas/session.schema"
 import * as sessionService from "../../services/sessionService"
 
@@ -20,14 +20,13 @@ function respondToServiceError(err: unknown): APIGatewayProxyResultV2 | null {
   })
 }
 
-// Admin/studio-manager can create + update sessions; admin alone can delete.
+// Staff need sessions:create / update / delete (lib/permissions.ts) — admins and
+// studio managers create and update, only admins delete, agents only view.
 // Clients can:
 //   • READ their own sessions
 //   • CREATE sessions for themselves with attendance='booked' — the client-
 //     side booking flow. Ownership + class-type-match are enforced in the
 //     service layer (see sessionService.createSession).
-const SESSION_WRITE_ROLES = ["admin", "studio-manager"]
-const SESSION_DELETE_ROLES = ["admin"]
 
 // Only "booked" is allowed when a client creates a session — they can't
 // backfill attendance, cancel someone else's booking, etc.
@@ -91,7 +90,7 @@ export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIG
       // This prevents a client from backfilling 'attended' or manipulating
       // someone else's cancellation state.
     } else {
-      const denied = requireRole(auth, ...SESSION_WRITE_ROLES)
+      const denied = requirePermission(auth, "sessions:create")
       if (denied) return denied
     }
 
@@ -122,7 +121,7 @@ export const createSession = async (event: APIGatewayProxyEventV2): Promise<APIG
 
 export const updateSession = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SESSION_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "sessions:update")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -146,7 +145,7 @@ export const updateSession = async (event: APIGatewayProxyEventV2): Promise<APIG
 
 export const deleteSession = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SESSION_DELETE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "sessions:delete")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))

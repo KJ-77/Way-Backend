@@ -10,14 +10,19 @@ custom:
     bundle: true
     minify: false
     sourcemap: true
-    target: node20
+    # Keep in step with provider.runtime below.
+    target: node24
     platform: node
     external:
       - pg-native
 
 provider:
   name: aws
-  runtime: nodejs20.x
+  # Node 24 — supported by AWS until ~April 2028. (Node 20 lost security patches
+  # on 2026-04-30; AWS blocks creating nodejs20.x functions from 2027-02-01 and
+  # updating them from 2027-03-03.) Node 24 has NO callback-style handlers — every
+  # handler here is async, and new ones must be too, or Lambda refuses to run them.
+  runtime: nodejs24.x
   region: eu-west-3
   stage: ${opt:stage, 'dev'}
   profile: Tarek
@@ -182,23 +187,6 @@ functions:
       - httpApi:
           path: /
           method: GET
-
-  # ── Dashboard ──
-  getDashboard:
-    handler: src/functions/dashboard/handler.getDashboard
-    vpc:
-      securityGroupIds:
-        - sg-07ae81e354436980c
-      subnetIds:
-        - subnet-0d78211d7c5202876
-        - subnet-01084e20e83286143
-        - subnet-01554d440f1605680
-    events:
-      - httpApi:
-          path: /dashboard
-          method: GET
-          authorizer:
-            name: customJwtAuthorizer
 
   # ── Users ──
   # DB-only read operations stay inside VPC

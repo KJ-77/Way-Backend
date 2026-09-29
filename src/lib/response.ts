@@ -147,9 +147,16 @@ export const handleError = (err: unknown): APIGatewayProxyResultV2 => {
     })
   }
 
+  // Deliberately generic. The raw error (a pg message naming tables and columns, an
+  // SDK message with hostnames) is already in CloudWatch via console.error above; it
+  // tells the caller nothing they can act on and leaks internals to whoever asked.
+  // The frontends translate SERVER_ERROR by code into their own "please try again /
+  // contact support" text, so nothing reads this string except API callers.
   return createResponse(500, {
     error: "Server error",
     code: "SERVER_ERROR",
-    message: error.message || String(err),
+    message: SERVER_ERROR_MESSAGE,
   })
 }
+
+export const SERVER_ERROR_MESSAGE = "Something went wrong on our side. Please try again."

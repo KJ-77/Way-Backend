@@ -1,16 +1,18 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
+import { can } from "../../lib/permissions"
 import { CreateItemSchema, UpdateItemSchema } from "../../lib/schemas/item.schema"
 import * as itemService from "../../services/itemService"
 import { onItemStageChanged } from "../../services/messageTriggers"
 
-// Admin/studio-manager can create + update items; admin alone can delete.
-// Stage rewinds (moving the stage backward, which can trigger weight refunds)
-// are also admin-only. Clients can READ their own items only — never mutate.
-const ITEM_WRITE_ROLES = ["admin", "studio-manager"]
-const ITEM_DELETE_ROLES = ["admin"]
-const ITEM_REWIND_ROLES = ["admin"]
+// Staff permissions (lib/permissions.ts):
+//   • creating is split by section — "studio-items:create" (admins, studio managers)
+//     and "pc-items:create" (those two plus agents, who may only add PC pieces);
+//   • "items:update" covers edits and FORWARD stage moves, incl. marking discarded;
+//   • "items:rewind" — moving a stage BACKWARD, incl. un-discard, which re-deducts
+//     or refunds clay weight — and "items:delete" are admin-only.
+// Clients can READ their own items only — never mutate.
 
 export const getItems = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
@@ -55,12 +57,27 @@ export const getItem = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
 export const createItem = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...ITEM_WRITE_ROLES)
-    if (denied) return denied
+    const auth = getAuthContext(event)
+    if (!auth) return createResponse(401, { error: "Unauthorized" })
+
+    // Two-step gate, because which permission applies depends on the body's section.
+    // Step 1, before parsing anything: refuse callers who can't create items of ANY
+    // kind — clients and unknown groups get a plain 403, never validation feedback.
+    if (!can(auth.groups, "studio-items:create") && !can(auth.groups, "pc-items:create")) {
+      return createResponse(403, { error: "Forbidden", message: "Insufficient permissions" })
+    }
 
     const raw = parseBody(event.body)
     const result = CreateItemSchema.safeParse(raw)
     if (!result.success) return createResponse(400, { error: "Validation failed", issues: result.error.issues })
+
+    // Step 2: the section-specific permission — an agent may add a PC piece, but a
+    // Studio piece (which hangs off a subscription and its clay) is staff-only.
+    const denied = requirePermission(
+      auth,
+      result.data.section === "PC" ? "pc-items:create" : "studio-items:create",
+    )
+    if (denied) return denied
 
     const item = await itemService.createItem(result.data)
     return createResponse(201, item)
@@ -72,7 +89,7 @@ export const createItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
 export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...ITEM_WRITE_ROLES)
+    const denied = requirePermission(auth, "items:update")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -98,7 +115,7 @@ export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
       previousStage = current.stage
       isBackward = itemService.isStageBackward(current.stage, result.data.stage)
       if (isBackward) {
-        const rewindDenied = requireRole(auth, ...ITEM_REWIND_ROLES)
+        const rewindDenied = requirePermission(auth, "items:rewind")
         if (rewindDenied) return rewindDenied
       }
     }
@@ -135,7 +152,7 @@ export const updateItem = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
 export const deleteItem = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...ITEM_DELETE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "items:delete")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))

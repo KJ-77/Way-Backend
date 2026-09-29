@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
-import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requirePermission } from "../../lib/auth"
 import {
   CreateScheduleSlotSchema,
   UpdateScheduleSlotSchema,
@@ -12,14 +12,15 @@ import { getBeirutWeekStart, isMonday, getBeirutDayOfWeek } from "../../lib/time
 import * as scheduleService from "../../services/scheduleService"
 import * as sessionService from "../../services/sessionService"
 
-// Only admins + studio managers can mutate the schedule (template or overrides).
+// Mutations need schedule:create / update / delete (lib/permissions.ts). Retiring a
+// class ("schedule:delete") is admin-only; cancelling or un-cancelling a week, and
+// clearing an override, count as "schedule:update".
 // Reads require ANY logged-in user — the customer-facing site at waybeirut.com
 // now gates the schedule behind login (previously public).
-const SCHEDULE_WRITE_ROLES = ["admin", "studio-manager"] as const
-
-// Class-detail (per-occurrence sessions) is staff-only: it includes client
-// names and attendance state, which the public schedule shouldn't expose.
-const CLASS_DETAIL_ROLES = ["admin", "studio-manager"] as const
+//
+// Class-detail (per-occurrence sessions) needs "sessions:read" (every staff role):
+// it includes client names and attendance state, which the public schedule
+// shouldn't expose.
 
 // ── GET /schedule?week=YYYY-MM-DD ──
 // Returns active slots merged with the override (if any) for the requested
@@ -66,7 +67,7 @@ export const getScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<AP
 
 export const createScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "schedule:create")
     if (denied) return denied
 
     const raw = parseBody(event.body)
@@ -82,7 +83,7 @@ export const createScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
 
 export const updateScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "schedule:update")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -105,7 +106,7 @@ export const updateScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
 // session count so the UI can confirm what happened to staff.
 export const deleteScheduleSlot = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "schedule:delete")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -126,7 +127,7 @@ export const deleteScheduleSlot = async (event: APIGatewayProxyEventV2): Promise
 export const upsertScheduleOverride = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...SCHEDULE_WRITE_ROLES)
+    const denied = requirePermission(auth, "schedule:update")
     if (denied) return denied
 
     const slotId = Number(getPathParam(event, "id"))
@@ -163,10 +164,10 @@ export const upsertScheduleOverride = async (event: APIGatewayProxyEventV2): Pro
 // ── GET /schedule/:id/sessions?date=YYYY-MM-DD ──
 // Class-detail payload for a specific occurrence: the slot (with override
 // merged + attending_count) plus the full session list for that date.
-// Staff-only — see CLASS_DETAIL_ROLES.
+// Staff-only — "sessions:read".
 export const getClassDetail = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...CLASS_DETAIL_ROLES)
+    const denied = requirePermission(getAuthContext(event), "sessions:read")
     if (denied) return denied
 
     const slotId = Number(getPathParam(event, "id"))
@@ -209,7 +210,7 @@ export const getClassDetail = async (event: APIGatewayProxyEventV2): Promise<API
 // Explicit clear, used when the UI's "revert to normal" button is clicked.
 export const deleteScheduleOverride = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SCHEDULE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "schedule:update")
     if (denied) return denied
 
     const slotId = Number(getPathParam(event, "id"))

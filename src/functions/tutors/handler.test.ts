@@ -86,6 +86,18 @@ describe("tutors — staff keep full access", () => {
     expect(status(await updateTutor(staffEvent("admin", { path: { id: "1" }, body: { hourly_rate: 25 } })))).toBe(200)
     expect(status(await deleteTutor(staffEvent("admin", { path: { id: "1" } })))).toBe(200)
   })
+
+  it("studio-manager can add and edit but never delete", async () => {
+    expect(status(await createTutor(staffEvent("studio-manager", { body: { full_name: "Maya" } })))).toBe(201)
+    expect(status(await deleteTutor(staffEvent("studio-manager", { path: { id: "1" } })))).toBe(403)
+    expect(tutorService.deleteTutor).not.toHaveBeenCalled()
+  })
+
+  it("agent can view tutors but change nothing", async () => {
+    expect(status(await getTutors(staffEvent("agent")))).toBe(200)
+    expect(status(await createTutor(staffEvent("agent", { body: { full_name: "Maya" } })))).toBe(403)
+    expect(status(await updateTutor(staffEvent("agent", { path: { id: "1" }, body: { notes: "x" } })))).toBe(403)
+  })
 })
 
 describe("updateTutor — only whitelisted columns reach the SQL builder", () => {

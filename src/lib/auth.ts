@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse } from "./response"
+import { rolesWith, type Permission } from "./permissions"
 
 export interface AuthContext {
   sub: string
@@ -40,6 +41,18 @@ export const requireRole = (
   }
   return null // authorized
 }
+
+/**
+ * The gate every staff route uses: "does the caller hold this permission?"
+ * Handlers ask for an action ("clients:delete"), never for role names — which roles
+ * hold which permission lives in one place, lib/permissions.ts. Same return shape as
+ * requireRole (401 / 403 response, or null when allowed), because it IS requireRole
+ * underneath, fed with the roles that hold the permission.
+ */
+export const requirePermission = (
+  auth: AuthContext | null,
+  permission: Permission,
+): APIGatewayProxyResultV2 | null => requireRole(auth, ...rolesWith(permission))
 
 // Any-logged-in-user gate. Returns a 401 response object when the caller
 // isn't authenticated, or null when they are. Mirror of requireRole's shape:

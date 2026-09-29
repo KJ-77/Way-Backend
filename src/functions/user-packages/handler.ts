@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, getQueryParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import type { CreateUserPackageDto, PackageStatus, UserPackageJoined } from "../../lib/types"
 import { UpdateUserPackageSchema } from "../../lib/schemas/userPackage.schema"
 import * as userPackageService from "../../services/userPackageService"
@@ -31,10 +31,9 @@ export const purchaseDateProblem = (value: unknown): string | null => {
   return null
 }
 
-// Admin/studio-manager can create, update, and (admin-only) delete subscriptions.
+// Staff need subscriptions:create / update / delete (lib/permissions.ts) — admins
+// and studio managers create and update, only admins delete, agents only view.
 // Clients can READ their own subscriptions only — never mutate.
-const SUBSCRIPTION_WRITE_ROLES = ["admin", "studio-manager"]
-const SUBSCRIPTION_DELETE_ROLES = ["admin"]
 
 // Derive status from row data instead of storing it in the DB.
 // Status depends ONLY on sessions remaining + expiry date. Weight is allowed to go
@@ -98,7 +97,7 @@ export const createUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SUBSCRIPTION_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "subscriptions:create")
     if (denied) return denied
 
     const data = parseBody<CreateUserPackageDto>(event.body)
@@ -131,7 +130,7 @@ export const updateUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SUBSCRIPTION_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "subscriptions:update")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -160,7 +159,7 @@ export const deleteUserPackage = async (
   event: APIGatewayProxyEventV2
 ): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...SUBSCRIPTION_DELETE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "subscriptions:delete")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))

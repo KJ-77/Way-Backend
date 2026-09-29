@@ -1,13 +1,13 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireAuth, requireRole } from "../../lib/auth"
+import { getAuthContext, requireAuth, requirePermission } from "../../lib/auth"
 import { CreatePackageSchema, UpdatePackageSchema } from "../../lib/schemas/package.schema"
 import * as packageService from "../../services/packageService"
 
 // All endpoints require a logged-in user (any role). Anonymous catalog browse
-// is not offered — clients must sign in first. Mutations additionally require
-// admin/studio-manager via requireRole.
-const PACKAGE_WRITE_ROLES = ["admin", "studio-manager"] as const
+// is not offered — clients must sign in first. Mutations additionally need
+// packages:create/update/delete — admin only (lib/permissions.ts): packages are the
+// studio's product catalog, so studio managers and agents can only view them.
 
 export const getPackages = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
@@ -39,7 +39,7 @@ export const getPackage = async (event: APIGatewayProxyEventV2): Promise<APIGate
 
 export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "packages:create")
     if (denied) return denied
 
     // Also fills validity_days with the default (60) when it isn't sent.
@@ -61,7 +61,7 @@ export const createPackage = async (event: APIGatewayProxyEventV2): Promise<APIG
 
 export const updatePackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "packages:update")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))
@@ -88,7 +88,7 @@ export const updatePackage = async (event: APIGatewayProxyEventV2): Promise<APIG
 
 export const deletePackage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...PACKAGE_WRITE_ROLES)
+    const denied = requirePermission(getAuthContext(event), "packages:delete")
     if (denied) return denied
 
     const id = Number(getPathParam(event, "id"))

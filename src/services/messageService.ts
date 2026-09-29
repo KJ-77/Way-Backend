@@ -121,6 +121,27 @@ export const getTemplateByTrigger = async (triggerEvent: string): Promise<Messag
 // ── Conversations ───────────────────────────────────────────────────────────
 
 /**
+ * Which messages count as HISTORY: what the client actually received, plus
+ * anything they sent us. Written against the `messages` table aliased as `m`.
+ *
+ * Everything still in flight lives elsewhere and stays out of here — drafts
+ * (pending_approval) and failures are in the queue, hand-offs awaiting "Did these
+ * go out?" and unconfirmed provider sends are 'queued', and discarded drafts are
+ * 'cancelled'. A conversation row is created the moment the first draft exists, so
+ * without this filter a client showed up in History as soon as anything was drafted
+ * for them, and kept showing up after the draft was discarded or marked not sent.
+ *
+ * Inbound rows are always 'delivered' today; matching on direction rather than
+ * status means a future inbound state can't silently drop a client's reply.
+ */
+const HISTORY_MESSAGE = `(m.direction = 'inbound' OR m.status IN ('sent', 'delivered', 'read'))`
+
+// When a history message happened: the moment it was confirmed sent (sent_at), or,
+// for inbound, when it arrived (created_at). Ordering by created_at alone would sort
+// a hand-sent message by when it was DRAFTED, which can be days before it went out.
+const HISTORY_AT = "COALESCE(m.sent_at, m.created_at)"
+
+/**
  * Returns the client's thread for this channel, creating it on first contact.
  * ON CONFLICT makes this safe under concurrency — two simultaneous auto-drafts
  * for the same client can't create duplicate threads.
@@ -170,19 +191,30 @@ export const findOrCreateConversation = async (
  * Inbox list. Every "live" field (last activity, preview, unread count, whether
  * the reply window is open) is DERIVED here rather than cached on the row —
  * see the migration header for why. LATERAL joins keep it to one query.
+ *
+ * Only conversations with at least one HISTORY_MESSAGE are listed — the INNER
+ * lateral join drops the rest — and the preview/timestamp come from that same set,
+ * so the list never previews a draft the thread doesn't show.
+ *
+ * Index: each lateral probe is a range scan on messages_thread_idx
+ * (conversation_id, created_at DESC), then a small in-memory filter + sort — a
+ * conversation holds tens of rows, not thousands. If a thread ever grows large,
+ * the fix is an expression index on (conversation_id, COALESCE(sent_at, created_at)
+ * DESC) partial on the HISTORY_MESSAGE predicate.
  */
 export const getConversations = async (): Promise<ConversationJoined[]> =>
   executeQuery<ConversationJoined>(`
     SELECT c.*, u.full_name AS user_name,
-           last.created_at AS last_message_at,
+           last.happened_at AS last_message_at,
            last.body        AS last_message_preview,
            inb.last_inbound_at,
            COALESCE(unread.count, 0)::int AS unread_count
     FROM conversations c
     JOIN users u ON u.id = c.user_id
-    LEFT JOIN LATERAL (
-      SELECT body, created_at FROM messages
-      WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1
+    JOIN LATERAL (
+      SELECT m.body, ${HISTORY_AT} AS happened_at FROM messages m
+      WHERE m.conversation_id = c.id AND ${HISTORY_MESSAGE}
+      ORDER BY ${HISTORY_AT} DESC, m.id DESC LIMIT 1
     ) last ON true
     LEFT JOIN LATERAL (
       SELECT MAX(created_at) AS last_inbound_at FROM messages
@@ -192,12 +224,19 @@ export const getConversations = async (): Promise<ConversationJoined[]> =>
       SELECT COUNT(*) AS count FROM messages
       WHERE conversation_id = c.id AND direction = 'inbound' AND read_at IS NULL
     ) unread ON true
-    ORDER BY last.created_at DESC NULLS LAST
+    ORDER BY last.happened_at DESC, c.id DESC
   `)
 
+/**
+ * One client's history, oldest first — only HISTORY_MESSAGE rows (see above).
+ * Ordered by the same timestamp the thread displays, so it always reads
+ * chronologically; `m.id` breaks ties deterministically.
+ */
 export const getConversationMessages = async (conversationId: number): Promise<MessageJoined[]> =>
   executeQuery<MessageJoined>(
-    `${MESSAGE_SELECT} WHERE m.conversation_id = $1 ORDER BY m.created_at ASC`,
+    `${MESSAGE_SELECT}
+     WHERE m.conversation_id = $1 AND ${HISTORY_MESSAGE}
+     ORDER BY ${HISTORY_AT} ASC, m.id ASC`,
     [conversationId],
   )
 
@@ -683,9 +722,17 @@ export const resolveUnconfirmed = async (
     return (await getMessageById(messageId))!
   }
 
+  // ⚠️ Both uses of $2 carry an explicit ::message_status cast, and they must.
+  // Postgres deduces an untyped parameter's type from where it's used: `status = $2`
+  // makes it message_status, but `$2 = 'sent'` on its own makes it text — and a
+  // parameter can only have one type, so the statement failed to even parse (42P08,
+  // "inconsistent types deduced for parameter $2"). That broke every "Yes, I sent it"
+  // in production until 2026-09-25. Mocked-DB tests can't see this; only a real
+  // Postgres parse can.
   const rows = await executeQuery<{ id: number }>(
     `UPDATE messages
-     SET status = $2, sent_at = CASE WHEN $2 = 'sent' THEN COALESCE(sent_at, NOW()) ELSE sent_at END
+     SET status = $2::message_status,
+         sent_at = CASE WHEN $2::message_status = 'sent' THEN COALESCE(sent_at, NOW()) ELSE sent_at END
      WHERE id = $1 AND status = 'queued'
      RETURNING id`,
     [messageId, resolution],

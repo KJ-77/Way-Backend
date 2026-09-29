@@ -4,9 +4,9 @@
 // "needs attention" pile, per-client message history, templates, and broadcasts.
 //
 // Everything here is STAFF ONLY. Clients have Cognito logins and their tokens reach
-// this API, so every handler gates on the admin/studio-manager groups — a client
+// this API, so every handler asks for a permission (lib/permissions.ts) — a client
 // must never be able to read the queue, approve a send, or launch a broadcast.
-// `requireRole` returns 403 for a client token because "client" is not in the list.
+// `requirePermission` returns 403 for a client token: no staff group, no permission.
 //
 // These handlers are deliberately thin. All the interesting logic (the atomic
 // approve claim, retry classification, chunked broadcast draining) lives in
@@ -14,7 +14,7 @@
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda"
 import { createResponse, parseBody, getPathParam, handleError } from "../../lib/response"
-import { getAuthContext, requireRole } from "../../lib/auth"
+import { getAuthContext, requirePermission } from "../../lib/auth"
 import {
   CreateMessageSchema,
   CreateBroadcastSchema,
@@ -24,17 +24,16 @@ import {
 } from "../../lib/schemas/message.schema"
 import * as messageService from "../../services/messageService"
 
-// Both staff roles can draft, approve and send. There is deliberately no
-// admin-only tier here: the whole design assumes the person running the studio
-// desk approves messages, and gating approval behind `admin` would push staff to
-// share the admin login — worse for the audit trail than the permission it buys.
-const MESSAGING_ROLES = ["admin", "studio-manager"]
-
-// Broadcasts are the one exception. A promo blast goes to every client at once, it
-// costs real money per recipient, and over-sending damages sender reputation with
-// carriers for ALL traffic — including the "your piece is ready" messages people
-// actually want. That's an owner-level decision.
-const BROADCAST_ROLES = ["admin"]
+// Who holds which messaging permission lives in lib/permissions.ts. The reasoning:
+//   • messages:create / send / discard — admins AND studio managers. There's
+//     deliberately no admin-only approval tier: the person at the studio desk
+//     approves messages, and gating approval behind `admin` would push staff to share
+//     the admin login — worse for the audit trail than the permission it buys.
+//     Agents only READ (the queue and the history), never send.
+//   • broadcasts:manage + templates:update — admin only. A promo blast goes to every
+//     client at once, costs real money per recipient, and over-sending damages sender
+//     reputation for ALL traffic; a template edit silently changes every future
+//     automatic message. Both are owner-level decisions.
 
 // Small helper: parse a numeric path param, or return a 400 response.
 // Returns a discriminated result rather than throwing, so handlers stay flat.
@@ -56,7 +55,7 @@ const numericParam = (
 /** Messages drafted and waiting for a human. The dashboard's primary view. */
 export const getQueue = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:read")
     if (denied) return denied
     return createResponse(200, await messageService.getPendingQueue())
   } catch (err) {
@@ -71,7 +70,7 @@ export const getQueue = async (event: APIGatewayProxyEventV2): Promise<APIGatewa
  */
 export const getUnconfirmed = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:read")
     if (denied) return denied
     return createResponse(200, await messageService.getUnconfirmed())
   } catch (err) {
@@ -83,7 +82,7 @@ export const getUnconfirmed = async (event: APIGatewayProxyEventV2): Promise<API
 export const createMessage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...MESSAGING_ROLES)
+    const denied = requirePermission(auth, "messages:create")
     if (denied) return denied
 
     const result = CreateMessageSchema.safeParse(parseBody(event.body))
@@ -129,7 +128,7 @@ export const createMessage = async (event: APIGatewayProxyEventV2): Promise<APIG
 export const approveMessage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...MESSAGING_ROLES)
+    const denied = requirePermission(auth, "messages:send")
     if (denied) return denied
 
     const param = numericParam(event, "id", "message ID")
@@ -153,7 +152,7 @@ export const approveMessage = async (event: APIGatewayProxyEventV2): Promise<API
 export const handoffMessage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...MESSAGING_ROLES)
+    const denied = requirePermission(auth, "messages:send")
     if (denied) return denied
 
     const param = numericParam(event, "id", "message ID")
@@ -169,7 +168,7 @@ export const handoffMessage = async (event: APIGatewayProxyEventV2): Promise<API
 export const cancelMessage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...MESSAGING_ROLES)
+    const denied = requirePermission(auth, "messages:discard")
     if (denied) return denied
 
     const param = numericParam(event, "id", "message ID")
@@ -184,7 +183,7 @@ export const cancelMessage = async (event: APIGatewayProxyEventV2): Promise<APIG
 /** Puts a failed message back in the queue so staff can fix and retry it. */
 export const requeueMessage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:send")
     if (denied) return denied
 
     const param = numericParam(event, "id", "message ID")
@@ -204,7 +203,7 @@ export const requeueMessage = async (event: APIGatewayProxyEventV2): Promise<API
  */
 export const resolveMessage = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:send")
     if (denied) return denied
 
     const param = numericParam(event, "id", "message ID")
@@ -234,7 +233,7 @@ export const resolveMessage = async (event: APIGatewayProxyEventV2): Promise<API
 
 export const getConversations = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:read")
     if (denied) return denied
     return createResponse(200, await messageService.getConversations())
   } catch (err) {
@@ -244,7 +243,7 @@ export const getConversations = async (event: APIGatewayProxyEventV2): Promise<A
 
 export const getConversationMessages = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:read")
     if (denied) return denied
 
     const param = numericParam(event, "id", "conversation ID")
@@ -259,7 +258,7 @@ export const getConversationMessages = async (event: APIGatewayProxyEventV2): Pr
 /** Clears the unread badge. No-op on SMS (nothing inbound), kept for WhatsApp. */
 export const markConversationRead = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:send")
     if (denied) return denied
 
     const param = numericParam(event, "id", "conversation ID")
@@ -276,7 +275,7 @@ export const markConversationRead = async (event: APIGatewayProxyEventV2): Promi
 
 export const getTemplates = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:read")
     if (denied) return denied
     return createResponse(200, await messageService.getTemplates())
   } catch (err) {
@@ -291,7 +290,7 @@ export const getTemplates = async (event: APIGatewayProxyEventV2): Promise<APIGa
  */
 export const updateTemplate = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...BROADCAST_ROLES)
+    const denied = requirePermission(getAuthContext(event), "templates:update")
     if (denied) return denied
 
     const param = numericParam(event, "id", "template ID")
@@ -316,7 +315,7 @@ export const updateTemplate = async (event: APIGatewayProxyEventV2): Promise<API
 
 export const getBroadcasts = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "messages:read")
     if (denied) return denied
     return createResponse(200, await messageService.getBroadcasts())
   } catch (err) {
@@ -331,7 +330,7 @@ export const getBroadcasts = async (event: APIGatewayProxyEventV2): Promise<APIG
 export const createBroadcast = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...BROADCAST_ROLES)
+    const denied = requirePermission(auth, "broadcasts:manage")
     if (denied) return denied
 
     const result = CreateBroadcastSchema.safeParse(parseBody(event.body))
@@ -360,7 +359,7 @@ export const createBroadcast = async (event: APIGatewayProxyEventV2): Promise<AP
 export const drainBroadcast = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     const auth = getAuthContext(event)
-    const denied = requireRole(auth, ...BROADCAST_ROLES)
+    const denied = requirePermission(auth, "broadcasts:manage")
     if (denied) return denied
 
     const param = numericParam(event, "id", "broadcast ID")
@@ -385,7 +384,7 @@ export const drainBroadcast = async (event: APIGatewayProxyEventV2): Promise<API
  */
 export const setMarketingOptOut = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    const denied = requireRole(getAuthContext(event), ...MESSAGING_ROLES)
+    const denied = requirePermission(getAuthContext(event), "clients:update")
     if (denied) return denied
 
     const userId = getPathParam(event, "id")
